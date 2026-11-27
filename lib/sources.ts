@@ -1,5 +1,5 @@
 import "server-only";
-import { secret } from "./config";
+import { secret, getSetting, setSetting } from "./config";
 import { looksLikePerson, splitFullName } from "./extract";
 
 /**
@@ -80,6 +80,8 @@ interface SerperResult {
 async function serper(q: string): Promise<SerperResult | null> {
   const key = await secret("SERPER_API_KEY");
   if (!key) return null;
+  const pausedUntil = await getSetting<string>("serper_paused_until");
+  if (pausedUntil && Date.parse(pausedUntil) > Date.now()) return null;
   try {
     const r = await fetch("https://google.serper.dev/search", {
       method: "POST",
@@ -88,6 +90,14 @@ async function serper(q: string): Promise<SerperResult | null> {
       signal: AbortSignal.timeout(15_000),
       cache: "no-store",
     });
+    if (r.status === 400 || r.status === 402 || r.status === 403 || r.status === 429) {
+      const body = await r.text();
+      // Out of searches (or rate limited): stop calling Google for a while instead of failing every company.
+      if (/credit|quota|limit|not enough|exceed/i.test(body) || r.status === 429) {
+        await setSetting("serper_paused_until", new Date(Date.now() + (r.status === 429 ? 10 * 60_000 : 24 * 3600_000)).toISOString());
+      }
+      return null;
+    }
     if (!r.ok) return null;
     return (await r.json()) as SerperResult;
   } catch {

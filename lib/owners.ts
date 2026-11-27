@@ -265,16 +265,13 @@ export async function findWebsite(company: string, courtId: string | null = null
     } catch {}
     return null;
   };
-  for (const c of [...cands].filter((x) => x.length >= 5).slice(0, 4)) {
-    const ok = await verify(`${c}.com`);
-    if (ok) return ok;
-  }
-  // Google (Serper): candidates go through the same page check.
-  for (const h of await serperWebsites(company, state ? (STATES[state] ?? null) : null, distinctive)) {
-    const ok = await verify(h);
-    if (ok) return ok;
-  }
-  return null;
+  // The obvious .com names are checked in parallel; the first verified one (in order) wins.
+  const guesses = await Promise.all([...cands].filter((x) => x.length >= 5).slice(0, 4).map((c) => verify(`${c}.com`)));
+  const guessed = guesses.find(Boolean);
+  if (guessed) return guessed;
+  // Google (Serper): candidates go through the same page check, also in parallel.
+  const fromGoogle = await Promise.all((await serperWebsites(company, state ? (STATES[state] ?? null) : null, distinctive)).map((h) => verify(h)));
+  return fromGoogle.find(Boolean) ?? null;
 }
 
 /** US business sites only: no government, school, military, or foreign country domains. */

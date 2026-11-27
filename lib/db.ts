@@ -21,7 +21,7 @@ pg.types.setTypeParser(1082, (v) => v);
 function pgDb(url: string): Db {
   const pool = new pg.Pool({
     connectionString: url,
-    max: 3,
+    max: 6,
     idleTimeoutMillis: 10_000,
     ssl: /localhost|127\.0\.0\.1/.test(url) ? undefined : { rejectUnauthorized: false },
   });
@@ -209,6 +209,8 @@ alter table leads add column if not exists source text not null default 'courtli
 alter table leads add column if not exists biz_state text;
 alter table leads add column if not exists biz_city text;
 alter table leads add column if not exists biz_address text;
+alter table leads add column if not exists research_claimed_at timestamptz;
+create index if not exists leads_research_queue_idx on leads (status, research_claimed_at) where direct_email is null;
 alter table leads add column if not exists owner_lookup_note text;
 create index if not exists leads_category_idx on leads (category, created_at desc);
 -- Update D: a lead can receive the new-lead email once, and an address can receive it once.

@@ -609,31 +609,41 @@ async function setFoundEmail(
 }
 
 /**
- * One lead at a time, cheapest source first:
+ * Research, many companies at once, cheapest source first:
  *   1. owner name: filing → free state registries → OpenCorporates (if key) → Google (Serper, if key)
- *   2. website:    free .com check → Google (Serper)
+ *   2. website:    free .com check → Google (Serper)            (looked up at the same time as the owner)
  *   3. email:      Hunter.io (if key, free 25/month) → BetterContact (name search, or Lead Finder on the website)
- * Incoming leads always; backfill leads too while "research backfill" is on. Leads that end without an email stay hidden.
+ * Companies are claimed before they're searched, so parallel runs never work on the same one.
+ * Most promising first: an owner already named, then the largest amount owed, then the newest filing.
  */
-export async function findOwners(onlyId?: string, budgetMs = 20_000): Promise<string> {
+export async function findOwners(onlyId?: string, budgetMs = 20_000, opts: { batch?: number; concurrency?: number } = {}): Promise<string> {
   const t0 = Date.now();
   const s = await getSettings();
-  const rows = await q<ResearchRow>(
-    `select id, company_name, court_id, status, is_historical_backfill, is_individual, company_domain, dba,
-            founder_full_name, founder_first_name, founder_last_name, founder_title, biz_state
-     from leads ${
-       onlyId
-         ? "where id = $1"
-         : `where status = 'researching' and direct_email is null ${s.enrich_backfill ? "" : "and is_historical_backfill = false"}
-            order by is_historical_backfill asc, filing_date desc nulls last, created_at desc limit 6`
-     }`,
-    onlyId ? [onlyId] : [],
-  );
+  const batch = opts.batch ?? 8;
+  const concurrency = opts.concurrency ?? 4;
+  const COLS = `id, company_name, court_id, status, is_historical_backfill, is_individual, company_domain, dba,
+            founder_full_name, founder_first_name, founder_last_name, founder_title, biz_state`;
+  const rows = onlyId
+    ? await q<ResearchRow>(`select ${COLS} from leads where id = $1`, [onlyId])
+    : await q<ResearchRow>(
+        `update leads set research_claimed_at = now()
+         where id in (
+           select id from leads
+           where status = 'researching' and direct_email is null ${s.enrich_backfill ? "" : "and is_historical_backfill = false"}
+             and (research_claimed_at is null or research_claimed_at < now() - interval '15 minutes')
+           order by is_historical_backfill asc, (founder_full_name is not null) desc, debt_amount desc nulls last, filing_date desc nulls last
+           limit $1
+           for update skip locked)
+         returning ${COLS}`,
+        [batch],
+      );
+  if (!rows.length) return "nothing to research";
   const bcKey = await secret("BETTERCONTACT_API_KEY");
   const hunterKey = (await secret("HUNTER_API_KEY")) && !(await hunterPaused());
+  const lfOff = Boolean(await getSetting("lf_unavailable"));
   const done = { emails: 0, names: 0, bc: 0, lf: 0, none: 0 };
-  for (const r of rows) {
-    if (Date.now() - t0 > budgetMs) break;
+
+  const researchOne = async (r: ResearchRow) => {
     const note: string[] = [];
     // An individual is searched through the business they're connected to (d/b/a), when the filing gives one.
     const company = r.is_individual ? r.dba : r.company_name;
@@ -642,28 +652,28 @@ export async function findOwners(onlyId?: string, budgetMs = 20_000): Promise<st
     if (!company) {
       await q(`update leads set status = 'enrichment_failed', owner_lookup_at = now(), owner_lookup_note = 'individual with no business named in the filing', updated_at = now() where id = $1`, [r.id]);
       done.none++;
-      continue;
+      return;
     }
     let name = r.founder_full_name && r.founder_first_name && r.founder_last_name ? { name: r.founder_full_name, first: r.founder_first_name, last: r.founder_last_name, title: r.founder_title ?? "", source: "" } : null;
-    if (!name) {
-      const { hit, tried } = await findOwner(company, where);
-      note.push(`checked ${tried.join(", ") || "filing"}`);
-      if (hit) {
-        name = hit;
+    // Owner and website are looked up at the same time.
+    const [ownerRes, domain] = await Promise.all([name ? Promise.resolve(null) : findOwner(company, where), r.company_domain ? Promise.resolve(r.company_domain) : findWebsite(company, where)]);
+    if (ownerRes) {
+      note.push(`checked ${ownerRes.tried.join(", ") || "filing"}`);
+      if (ownerRes.hit) {
+        name = ownerRes.hit;
         done.names++;
-        note.push(`owner ${hit.name} (${hit.source})`);
+        note.push(`owner ${ownerRes.hit.name} (${ownerRes.hit.source})`);
         await q(
           `update leads set founder_full_name = $2, founder_first_name = $3, founder_last_name = $4, founder_title = $5, founder_source = $6, updated_at = now() where id = $1`,
-          [r.id, hit.name, hit.first, hit.last, hit.title, hit.source],
+          [r.id, ownerRes.hit.name, ownerRes.hit.first, ownerRes.hit.last, ownerRes.hit.title, ownerRes.hit.source],
         );
       }
     }
-    const domain = r.company_domain ?? (await findWebsite(company, where));
     note.push(domain ? `website ${domain}` : "no website");
     if (domain && !r.company_domain) await q(`update leads set company_domain = $2 where id = $1`, [r.id, domain]);
 
     // Hunter.io first while its free monthly searches last — only on a website NEXGEN verified as this company.
-    if (hunterKey && domain) {
+    if (hunterKey && domain && !(await hunterPaused())) {
       try {
         const f = name ? await hunterEmailFinder(name.first, name.last, domain) : await hunterDomainSearch(domain);
         if (f && (await setFoundEmail(r.id, f))) {
@@ -671,10 +681,10 @@ export async function findOwners(onlyId?: string, budgetMs = 20_000): Promise<st
           note.push(`email via ${f.source}`);
           await q(`update leads set owner_lookup_at = now(), owner_lookup_note = $2 where id = $1`, [r.id, note.join(" · ")]);
           await afterContact(r.id);
-          continue;
+          return;
         }
       } catch (e) {
-        if (/limit/.test((e as Error).message)) {
+        if (/limit/.test((e as Error).message) && !(await hunterPaused())) {
           const d = new Date();
           await setSetting("hunter_paused_until", new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1)).toISOString());
           await logRun("enrich", false, "Hunter.io monthly searches used up — paused until next month");
@@ -689,9 +699,9 @@ export async function findOwners(onlyId?: string, budgetMs = 20_000): Promise<st
         done.bc++;
         note.push("searching BetterContact by name");
         await q(`update leads set status = 'discovered', bc_job_id = null, owner_lookup_at = now(), owner_lookup_note = $2, updated_at = now() where id = $1`, [r.id, note.join(" · ")]);
-        continue;
+        return;
       }
-      if (domain && !(await getSetting("lf_unavailable"))) {
+      if (domain && !lfOff && !(await getSetting("lf_unavailable"))) {
         try {
           const id = await leadFinder(domain, webhookUrl(), s.find_phones);
           done.lf++;
@@ -701,11 +711,10 @@ export async function findOwners(onlyId?: string, budgetMs = 20_000): Promise<st
                enrich_started_at = now(), enrich_attempts = enrich_attempts + 1, updated_at = now() where id = $1`,
             [r.id, note.join(" · "), `lf:${id}`],
           );
-          continue;
+          return;
         } catch (e) {
           const m = (e as Error).message;
           if (/out of free lead finder|upgrade your plan/i.test(m)) {
-            // The free plan's Lead Finder searches are used up; name searches still work.
             await setSetting("lf_unavailable", { at: new Date().toISOString(), reason: "BetterContact free plan: Lead Finder searches used up" });
             await logRun("enrich", false, "BetterContact Lead Finder (search by website) is used up on the free plan — name searches continue");
           } else if (/402|credit/i.test(m)) await pauseBc("no credits left");
@@ -713,22 +722,41 @@ export async function findOwners(onlyId?: string, budgetMs = 20_000): Promise<st
         }
       }
     } else if (paused && (name || domain)) {
-      // Keep it queued: research resumes when credits are back.
+      // Keep it for later, but step aside for 6 hours so it doesn't block the queue.
       note.push(`waiting for BetterContact (${paused})`);
-      await q(`update leads set owner_lookup_note = $2, updated_at = now() where id = $1`, [r.id, note.join(" · ")]);
-      continue;
+      await q(`update leads set owner_lookup_note = $2, research_claimed_at = now() + interval '6 hours', updated_at = now() where id = $1`, [r.id, note.join(" · ")]);
+      return;
     }
     done.none++;
     await q(`update leads set status = 'enrichment_failed', owner_lookup_at = now(), owner_lookup_note = $2, updated_at = now() where id = $1`, [r.id, note.join(" · ")]);
-  }
+  };
+
+  // A small worker pool: `concurrency` companies in flight, stop starting new ones when the time budget is spent.
+  let next = 0;
+  const worker = async () => {
+    while (next < rows.length && Date.now() - t0 < budgetMs) {
+      const r = rows[next++];
+      try {
+        await researchOne(r);
+      } catch (e) {
+        await logRun("enrich", false, `Research for ${r.company_name}: ${(e as Error).message}`);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, rows.length) }, worker));
+  // Anything claimed but not reached goes back to the queue right away.
+  const untouched = rows.slice(next).map((r) => r.id);
+  if (untouched.length) await q(`update leads set research_claimed_at = null where id = any($1)`, [untouched]);
+
   if (done.emails || done.names || done.bc || done.lf)
     await logRun(
       "enrich",
       true,
-      `Research: ${done.emails} email${done.emails === 1 ? "" : "s"} found directly, ${done.names} owner name${done.names === 1 ? "" : "s"} found, ${done.bc} sent to BetterContact, ${done.lf} website search${done.lf === 1 ? "" : "es"}, ${done.none} with nothing to search`,
+      `Research: ${next} companies — ${done.emails} email${done.emails === 1 ? "" : "s"} found directly, ${done.names} owner name${done.names === 1 ? "" : "s"} found, ${done.bc} sent to BetterContact, ${done.lf} website search${done.lf === 1 ? "" : "es"}, ${done.none} with nothing to search`,
     );
-  return `${rows.length} researched (${done.emails} emails, ${done.bc + done.lf} to BetterContact, ${done.none} no contact)`;
+  return `${next} researched in ${Math.round((Date.now() - t0) / 1000)}s (${done.emails} emails, ${done.bc + done.lf} to BetterContact, ${done.none} no contact)`;
 }
+
 
 /** A lead just got an email: alert, read its case figures next, and queue the category email if Auto-Send is on. */
 async function afterContact(leadId: string) {
@@ -973,7 +1001,7 @@ export async function tick(opts: { forceIngest?: boolean } = {}) {
   await step("state tax lists", () => importStateTaxes());
   await step("apify liens", () => runApifyFeeds());
   await step("bank defaults", () => importSba(Math.max(5_000, 25_000 - (Date.now() - t0))));
-  await step("research", () => findOwners(undefined, Math.max(5_000, 40_000 - (Date.now() - t0))));
+  await step("research", () => findOwners(undefined, Math.max(5_000, 45_000 - (Date.now() - t0)), { batch: 8, concurrency: 4 }));
   await step("enrich", () => enrichPending());
   await step("poll", () => pollEnrichment());
   await step("backfill", () => processBackfill(Math.max(3_000, 40_000 - (Date.now() - t0))));
