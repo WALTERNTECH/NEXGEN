@@ -42,6 +42,7 @@ function Frame({ children }: { children: React.ReactNode }) {
   const isOn = (href: string) => (href === "/" ? path === "/" : path.startsWith(href));
   const count = (k?: "unseen" | "unread_replies") => (k && feed ? feed.stats[k] : 0);
   const h = feed?.health;
+  const autoCount = feed ? Object.values(feed.settings.categories).filter((c) => c.auto_send).length : 0;
 
   return (
     <div className="shell">
@@ -71,7 +72,7 @@ function Frame({ children }: { children: React.ReactNode }) {
               <span className={`dot ${h?.mailbox ? "ok" : "off"}`} /> Mailbox
             </div>
             <div>
-              <span className={`dot ${feed?.settings.auto_send ? "ok" : "wait"}`} /> Auto-send {feed?.settings.auto_send ? "on" : "off"}
+              <span className={`dot ${autoCount ? "ok" : "wait"}`} /> Auto-send {autoCount ? `on (${autoCount}/3)` : "off"}
             </div>
           </div>
         </div>

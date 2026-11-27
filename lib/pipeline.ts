@@ -1,8 +1,21 @@
 import "server-only";
-import { appUrl, CATEGORIES, CATEGORY_LABEL, getSettings, getSetting, setSetting, getTemplate, secret, type Category } from "./config";
-import { q, one, lease, release } from "./db";
-import { searchCategory, signerDocs, docketUrl, type ClDocket } from "./courtlistener";
+import {
+  appUrl,
+  CATEGORIES,
+  CATEGORY_LABEL,
+  getSettings,
+  getSetting,
+  setSetting,
+  getTemplate,
+  templateSaved,
+  secret,
+  type Category,
+} from "./config";
+import { q, one, tx, lease, release } from "./db";
+import { searchCategory, docketById, docketUrl, ymd, type ClDocket } from "./courtlistener";
 import { companyFor, heuristicExtract, llmRefine } from "./extract";
+import { caseDetails } from "./figures";
+import { money } from "./render";
 import { enrich, result, leadIdOf, GOOD_EMAIL, type BcResult } from "./bettercontact";
 import { render, sendMail, mailReady, type LeadVars } from "./mailer";
 import { checkInbox } from "./inbox";
@@ -11,8 +24,57 @@ import { logRun } from "./runs";
 
 const MAX_NEW_PER_CATEGORY = 40;
 
-// ---------------- Module A: discovery ----------------
+/*
+ * Lead statuses
+ *   pending_details        stored, case documents not read yet (owner name may come from them)
+ *   discovered             incoming lead with an owner name, waiting for BetterContact
+ *   not_enriched_backfill  historical backfill lead: never sent to BetterContact automatically (Update A)
+ *   enriching / enriched / enrichment_failed / contacted / replied / unsubscribed
+ */
 
+// ---------------- Module A: discovery (incoming + backfill) ----------------
+
+/** Save one docket as a lead. Returns true when it was new. Case documents are read later by the details worker. */
+async function storeDocket(cat: Category, d: ClDocket, backfill: boolean): Promise<"new" | "known" | "skip"> {
+  const company = companyFor(cat, d);
+  if (!company) return "skip";
+  const x = heuristicExtract(cat, d, company, []);
+  const status = x.founderFullName ? (backfill ? "not_enriched_backfill" : "discovered") : "pending_details";
+  const ins = await q(
+    `insert into leads (external_case_id, category, case_name, case_number, court_id, court_name, company_name, distress_type,
+       creditor_summary, filing_date, insolvency_stage, founder_full_name, founder_first_name, founder_last_name, founder_title,
+       founder_source, status, cl_url, raw, is_historical_backfill, judge, trustee, seen_at)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22, case when $20 then now() end)
+     on conflict (external_case_id) do nothing returning id`,
+    [
+      String(d.docket_id),
+      cat,
+      d.caseName,
+      d.docketNumber ?? null,
+      d.court_id ?? null,
+      d.court ?? null,
+      x.companyName,
+      x.distressType,
+      x.creditorSummary,
+      d.dateFiled ?? null,
+      x.insolvencyStage,
+      x.founderFullName,
+      x.founderFirstName,
+      x.founderLastName,
+      x.founderTitle,
+      x.founderSource,
+      status,
+      docketUrl(d),
+      JSON.stringify({ party: d.party?.slice(0, 40), suitNature: d.suitNature, cause: d.cause, chapter: d.chapter, docket_id: d.docket_id }),
+      backfill,
+      d.assignedTo || null,
+      d.trustee_str || null,
+    ],
+  );
+  return ins.length ? "new" : "known";
+}
+
+/** Incoming live crawl: only the newest filings (look-back in days, default 2). These get enriched automatically. */
 export async function ingest(force = false): Promise<string> {
   const s = await getSettings();
   if (!force) {
@@ -20,80 +82,31 @@ export async function ingest(force = false): Promise<string> {
     if (last && Date.now() - Date.parse(last) < s.ingest_every_min * 60_000) return "not due";
   }
   if (!(await secret("COURTLISTENER_API_KEY"))) return "no CourtListener key";
-  if (!(await lease("ingest", 240))) return "already running";
+  if (!(await lease("ingest", 120))) return "already running";
   try {
     await setSetting("last_ingest_at", new Date().toISOString());
+    const after = ymd(new Date(Date.now() - s.lookback_days * 86_400_000));
     const added: Record<Category, number> = { court: 0, tax: 0, debt: 0 };
-    const skipped = { known: 0, notBusiness: 0 };
     const errors: string[] = [];
     for (const cat of CATEGORIES) {
       const conf = s.categories[cat];
       if (!conf?.on || !conf.query.trim()) continue;
-      let dockets: ClDocket[] = [];
       try {
-        dockets = await searchCategory(cat, conf.query, s.lookback_days);
+        const { dockets } = await searchCategory(cat, conf.query, { after });
+        for (const d of dockets) {
+          if (added[cat] >= MAX_NEW_PER_CATEGORY) break;
+          if ((await storeDocket(cat, d, false)) === "new") added[cat]++;
+        }
       } catch (e) {
         errors.push(`${CATEGORY_LABEL[cat]}: ${(e as Error).message}`);
-        continue;
-      }
-      const ids = dockets.map((d) => String(d.docket_id));
-      const known = new Set(
-        (await q<{ external_case_id: string }>(`select external_case_id from leads where external_case_id = any($1)`, [ids])).map((r) => r.external_case_id),
-      );
-      for (const d of dockets) {
-        if (added[cat] >= MAX_NEW_PER_CATEGORY) break;
-        if (known.has(String(d.docket_id))) {
-          skipped.known++;
-          continue;
-        }
-        known.add(String(d.docket_id));
-        const company = companyFor(cat, d);
-        if (!company) {
-          skipped.notBusiness++;
-          continue;
-        }
-        const docs = await signerDocs(d.docket_id);
-        let x = heuristicExtract(cat, d, company, docs);
-        if (!x.founderFullName || !x.debtAmount) x = await llmRefine(cat, d, docs, x);
-        const ins = await q(
-          `insert into leads (external_case_id, category, case_name, case_number, court_id, court_name, company_name, distress_type,
-             debt_amount_text, debt_amount, creditor_summary, filing_date, insolvency_stage, founder_full_name, founder_first_name,
-             founder_last_name, founder_title, founder_source, status, cl_url, raw)
-           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
-           on conflict (external_case_id) do nothing returning id`,
-          [
-            String(d.docket_id),
-            cat,
-            d.caseName,
-            d.docketNumber ?? null,
-            d.court_id ?? null,
-            d.court ?? null,
-            x.companyName,
-            x.distressType,
-            x.debtAmountText,
-            x.debtAmount,
-            x.creditorSummary,
-            d.dateFiled ?? null,
-            x.insolvencyStage,
-            x.founderFullName,
-            x.founderFirstName,
-            x.founderLastName,
-            x.founderTitle,
-            x.founderSource,
-            x.founderFullName ? "discovered" : "enrichment_failed",
-            docketUrl(d),
-            JSON.stringify({ party: d.party?.slice(0, 30), suitNature: d.suitNature, cause: d.cause, chapter: d.chapter }),
-          ],
-        );
-        if (ins.length) added[cat]++;
       }
     }
     const total = added.court + added.tax + added.debt;
     const summary =
-      `${total} new lead${total === 1 ? "" : "s"}` +
+      `Incoming: ${total} new lead${total === 1 ? "" : "s"}` +
       (total ? ` (Court ${added.court}, Tax ${added.tax}, Debt ${added.debt})` : "") +
       (errors.length ? ` — ${errors.join("; ")}` : "");
-    await logRun("ingest", errors.length === 0, summary, { added, skipped, errors });
+    await logRun("ingest", errors.length === 0, summary, { added, errors, after });
     if (total) {
       await notify({
         title: `${total} new distressed lead${total === 1 ? "" : "s"}`,
@@ -108,7 +121,169 @@ export async function ingest(force = false): Promise<string> {
   }
 }
 
-// ---------------- Module B: enrichment ----------------
+export interface BackfillJob {
+  from: string;
+  to: string;
+  categories: Category[];
+  cursors: Partial<Record<Category, string | null>>;
+  done: Category[];
+  added: Record<Category, number>;
+  scanned: number;
+  status: "running" | "done" | "cancelled" | "error";
+  error?: string | null;
+  started_at: string;
+  finished_at?: string | null;
+}
+
+export async function startBackfill(from: string, to: string, categories: Category[]) {
+  const job: BackfillJob = {
+    from,
+    to,
+    categories,
+    cursors: {},
+    done: [],
+    added: { court: 0, tax: 0, debt: 0 },
+    scanned: 0,
+    status: "running",
+    started_at: new Date().toISOString(),
+  };
+  await setSetting("backfill", job);
+  await logRun("ingest", true, `Backfill started: ${from} → ${to} (${categories.map((c) => CATEGORY_LABEL[c]).join(", ")}) — no automatic enrichment`);
+  return job;
+}
+
+/** Historical backfill: one page per category per run, stored as NOT_ENRICHED_BACKFILL (Update A). */
+export async function processBackfill(budgetMs = 20_000): Promise<string> {
+  const job = await getSetting<BackfillJob>("backfill");
+  if (!job || job.status !== "running") return "idle";
+  if (!(await secret("COURTLISTENER_API_KEY"))) return "no key";
+  if (!(await lease("backfill", 90))) return "busy";
+  const t0 = Date.now();
+  try {
+    const s = await getSettings();
+    for (const cat of job.categories) {
+      if (job.done.includes(cat) || Date.now() - t0 > budgetMs) continue;
+      const cursor = job.cursors[cat];
+      const page = await searchCategory(cat, s.categories[cat].query, { after: job.from, before: job.to, cursor: cursor ?? null, maxPages: 1 });
+      for (const d of page.dockets) {
+        job.scanned++;
+        if ((await storeDocket(cat, d, true)) === "new") job.added[cat]++;
+      }
+      job.cursors[cat] = page.next;
+      if (!page.next) job.done.push(cat);
+    }
+    if (job.categories.every((c) => job.done.includes(c))) {
+      job.status = "done";
+      job.finished_at = new Date().toISOString();
+      const n = job.added.court + job.added.tax + job.added.debt;
+      await logRun("ingest", true, `Backfill finished: ${n} historical lead${n === 1 ? "" : "s"} saved (not enriched)`, job.added);
+      await notify({ title: "Backfill finished", body: `${n} historical leads saved — enrich any of them from the lead page`, url: "/leads?source=backfill", tag: "backfill" });
+    }
+    await setSetting("backfill", job);
+    return `backfill ${job.status} (+${job.added.court + job.added.tax + job.added.debt})`;
+  } catch (e) {
+    job.status = "error";
+    job.error = (e as Error).message;
+    await setSetting("backfill", job);
+    await logRun("ingest", false, `Backfill stopped: ${job.error}`);
+    return job.error;
+  } finally {
+    await release("backfill");
+  }
+}
+
+// ---------------- Update C: case details worker ----------------
+
+interface DetailRow {
+  [k: string]: unknown;
+  id: string;
+  category: Category;
+  external_case_id: string;
+  company_name: string;
+  founder_full_name: string | null;
+  status: string;
+  is_historical_backfill: boolean;
+  raw: { docket_id?: number } | null;
+}
+
+/** Reads docket entries and public filing text for new leads, and re-checks recent bankruptcies daily until their schedules appear. */
+export async function refreshDetails(budgetMs = 25_000, onlyId?: string): Promise<string> {
+  if (!(await secret("COURTLISTENER_API_KEY"))) return "no key";
+  if (!onlyId && !(await lease("details", 60))) return "busy";
+  const t0 = Date.now();
+  let n = 0;
+  try {
+    const rows = await q<DetailRow>(
+      onlyId
+        ? `select id, category, external_case_id, company_name, founder_full_name, status, is_historical_backfill, raw from leads where id = $1`
+        : `select id, category, external_case_id, company_name, founder_full_name, status, is_historical_backfill, raw from leads
+           where details_checked_at is null
+              or (debt_amount is null and filing_date > current_date - 60 and details_checked_at < now() - interval '20 hours')
+           order by (details_checked_at is null) desc, is_historical_backfill asc, created_at desc limit 12`,
+      onlyId ? [onlyId] : [],
+    );
+    for (const r of rows) {
+      if (Date.now() - t0 > budgetMs) break;
+      const docketId = Number(r.raw?.docket_id ?? r.external_case_id);
+      const d = await docketById(docketId);
+      if (!d) {
+        await q(`update leads set details_checked_at = now() where id = $1`, [r.id]);
+        continue;
+      }
+      const det = await caseDetails(r.category, d);
+      // A signer named in the documents fills in a missing owner.
+      let founder: { full: string; first: string; last: string; title: string | null; source: string } | null = null;
+      if (!r.founder_full_name) {
+        let x = heuristicExtract(r.category, d, r.company_name, det.entries);
+        if (!x.founderFullName) x = await llmRefine(r.category, d, det.entries, x);
+        if (x.founderFullName && x.founderFirstName && x.founderLastName)
+          founder = { full: x.founderFullName, first: x.founderFirstName, last: x.founderLastName, title: x.founderTitle, source: x.founderSource ?? "court document" };
+      }
+      const nextStatus =
+        r.status === "pending_details" ? (founder ? (r.is_historical_backfill ? "not_enriched_backfill" : "discovered") : "enrichment_failed") : r.status;
+      await q(
+        `update leads set
+           debt_amount = coalesce($2, debt_amount), debt_amount_text = coalesce($3, debt_amount_text), tax_debt = coalesce($4, tax_debt),
+           secured_debt = coalesce($5, secured_debt), unsecured_debt = coalesce($6, unsecured_debt), priority_debt = coalesce($7, priority_debt),
+           liabilities_range = coalesce($8, liabilities_range), figures_source = coalesce($9, figures_source),
+           judge = coalesce($10, judge), trustee = coalesce($11, trustee), dba = coalesce($12, dba),
+           case_summary = $13, case_notes = $14, details_checked_at = now(),
+           founder_full_name = coalesce(founder_full_name, $15), founder_first_name = coalesce(founder_first_name, $16),
+           founder_last_name = coalesce(founder_last_name, $17), founder_title = coalesce(founder_title, $18), founder_source = coalesce(founder_source, $19),
+           status = $20, updated_at = now()
+         where id = $1`,
+        [
+          r.id,
+          det.total,
+          det.total ? money(det.total) : det.range,
+          det.tax,
+          det.secured,
+          det.unsecured,
+          det.priority,
+          det.range,
+          det.source,
+          det.judge,
+          det.trustee,
+          det.dba,
+          det.summary,
+          JSON.stringify(det.notes),
+          founder?.full ?? null,
+          founder?.first ?? null,
+          founder?.last ?? null,
+          founder?.title ?? null,
+          founder?.source ?? null,
+          nextStatus,
+        ],
+      );
+      n++;
+    }
+    return `${n} case${n === 1 ? "" : "s"} read`;
+  } finally {
+    if (!onlyId) await release("details");
+  }
+}
+
+// ---------------- Module B: enrichment (incoming only, Update A) ----------------
 
 export function webhookUrl() {
   const base = appUrl();
@@ -124,16 +299,22 @@ interface LeadRow extends LeadVars {
   company_domain: string | null;
   linkedin_url: string | null;
   auto_email_sent: boolean;
-  category: string;
+  category: Category;
+  is_historical_backfill: boolean;
 }
 
-export async function enrichPending(onlyId?: string): Promise<string> {
+/**
+ * Automatic runs pick incoming leads only (is_historical_backfill = false). Backfill leads reach BetterContact
+ * only through an explicit "Enrich now" on that one lead (onlyId).
+ */
+export async function enrichPending(only?: string | string[]): Promise<string> {
+  const ids = only === undefined ? null : Array.isArray(only) ? only : [only];
   if (!(await secret("BETTERCONTACT_API_KEY"))) return "no BetterContact key";
   const rows = await q<LeadRow>(
     `select * from leads where status = 'discovered' and founder_first_name is not null and founder_last_name is not null
-       and founder_last_name <> '' and bc_job_id is null ${onlyId ? "and id = $1" : ""}
+       and founder_last_name <> '' and bc_job_id is null ${ids ? "and id = any($1)" : "and is_historical_backfill = false"}
      order by created_at limit 50`,
-    onlyId ? [onlyId] : [],
+    ids ? [ids] : [],
   );
   if (!rows.length) return "nothing to enrich";
   try {
@@ -153,9 +334,11 @@ export async function enrichPending(onlyId?: string): Promise<string> {
        where id = any($2) and status = 'discovered'`,
       [id, rows.map((r) => r.id)],
     );
-    await logRun("enrich", true, `Sent ${rows.length} founder${rows.length === 1 ? "" : "s"} to BetterContact`, { request_id: id });
+    await logRun("enrich", true, `Sent ${rows.length} ${ids ? `lead${rows.length === 1 ? "" : "s"} (Enrich now)` : `incoming founder${rows.length === 1 ? "" : "s"}`} to BetterContact`, { request_id: id });
     return `sent ${rows.length}`;
   } catch (e) {
+    // Put a manual request back where it was so it can be retried.
+    if (ids) await q(`update leads set status = case when is_historical_backfill then 'not_enriched_backfill' else 'enrichment_failed' end where id = any($1) and status = 'discovered'`, [ids]);
     await logRun("enrich", false, (e as Error).message);
     return (e as Error).message;
   }
@@ -188,7 +371,6 @@ export async function applyEnrichment(res: BcResult, via: "webhook" | "poll"): P
        where id = $1 and status = 'enriching' returning id`,
       [leadId, emailSaved, item.contact_email_address_status ?? null, phone, li, item.contact_job_title ?? null, item.company_domain ?? null, ok ? "enriched" : "enrichment_failed"],
     ).catch(async (e) => {
-      // A concurrent writer took the address first (unique index). Keep the phone, drop the email.
       if (String(e.code) === "23505") {
         return q(`update leads set direct_mobile = $2, status = $3, updated_at = now() where id = $1 and status = 'enriching' returning id`, [
           leadId,
@@ -206,7 +388,7 @@ export async function applyEnrichment(res: BcResult, via: "webhook" | "poll"): P
       url: `/leads?lead=${leadId}`,
       tag: `contact-${leadId}`,
     });
-    if (s.auto_send && emailSaved) await queueEmail(leadId, "initial", "auto");
+    if (emailSaved && s.categories[lead.category]?.auto_send && (await templateSaved(lead.category))) await queueEmail(leadId, "initial", "auto");
   }
   await logRun(via === "webhook" ? "webhook" : "enrich", true, `BetterContact ${via}: ${found} of ${res.data.length} contact${res.data.length === 1 ? "" : "s"} found`, {
     request_id: res.id,
@@ -239,24 +421,29 @@ export async function pollEnrichment(): Promise<string> {
   return `${done} finished`;
 }
 
-// ---------------- Module C: idempotent outreach ----------------
+// ---------------- Module C / Update D: zero-duplicate outreach ----------------
 
 export type EmailKind = "initial" | "followup";
 
-/** Lock 1 + Lock 2: verify the lead, then reserve a unique log row. Returns false when it would be a duplicate. */
+/**
+ * Lock 1 + Lock 2 in one transaction: lock the lead row, verify its send state, then reserve a log row.
+ * Unique indexes make a second new-lead email impossible per lead AND per address, even across parallel requests.
+ */
 export async function queueEmail(leadId: string, kind: EmailKind, origin: "auto" | "bulk" | "manual" | "auto-followup") {
-  const lead = await one<LeadRow>(`select * from leads where id = $1`, [leadId]);
-  if (!lead || !lead.direct_email) return { ok: false, reason: "No verified email" };
-  if (lead.status === "unsubscribed") return { ok: false, reason: "Unsubscribed" };
-  if (kind === "initial" && lead.auto_email_sent) return { ok: false, reason: "Already contacted" };
-  if (kind === "followup" && !lead.auto_email_sent) return { ok: false, reason: "Send the new-lead email first" };
   try {
-    const r = await q(
-      `insert into email_log (lead_id, kind, recipient_email, status, origin) values ($1, $2, $3, 'queued', $4)
-       on conflict do nothing returning id`,
-      [leadId, kind, lead.direct_email.toLowerCase(), origin],
-    );
-    return r.length ? { ok: true } : { ok: false, reason: kind === "initial" ? "Already emailed" : "Follow-up already waiting" };
+    return await tx(async (t) => {
+      const lead = (await t.query<LeadRow>(`select * from leads where id = $1 for update`, [leadId])).rows[0];
+      if (!lead || !lead.direct_email) return { ok: false, reason: "No verified email" };
+      if (lead.status === "unsubscribed") return { ok: false, reason: "Unsubscribed" };
+      if (kind === "initial" && lead.auto_email_sent) return { ok: false, reason: "Already contacted" };
+      if (kind === "followup" && !lead.auto_email_sent) return { ok: false, reason: "Send the new-lead email first" };
+      const r = await t.query(
+        `insert into email_log (lead_id, kind, recipient_email, status, origin) values ($1, $2, $3, 'queued', $4)
+         on conflict do nothing returning id`,
+        [leadId, kind, lead.direct_email.toLowerCase(), origin],
+      );
+      return r.rows.length ? { ok: true } : { ok: false, reason: kind === "initial" ? "Already emailed" : "Follow-up already waiting" };
+    });
   } catch (e) {
     if (String((e as { code?: string }).code) === "23505") return { ok: false, reason: "Duplicate blocked" };
     throw e;
@@ -269,12 +456,10 @@ export async function processQueue(max = 25): Promise<string> {
   if (!(await lease("send", 280))) return "already sending";
   try {
     const s = await getSettings();
-    // Sends that crashed mid-flight are never retried automatically (they may have gone out).
     await q(`update email_log set status = 'failed', error = 'Interrupted — check Sent folder before retrying' where status = 'sending' and created_at < now() - interval '15 minutes'`);
     let sent = 0;
     const t0 = Date.now();
-    while (sent < max && Date.now() - t0 < 45_000) {
-      // Lock 3: rolling 24-hour cap and spacing between sends.
+    while (sent < max && Date.now() - t0 < 40_000) {
       const st = await one<{ today: number; last: string | null }>(
         `select count(*) filter (where sent_at > now() - interval '24 hours') as today, max(sent_at) as last from email_log where status = 'sent'`,
       );
@@ -291,15 +476,23 @@ export async function processQueue(max = 25): Promise<string> {
       if (!job) break;
       const lead = await one<LeadRow & { followups_sent: number }>(`select * from leads where id = $1`, [job.lead_id]);
       if (!lead || lead.status === "unsubscribed" || (job.kind === "initial" && lead.auto_email_sent)) {
-        await q(`update email_log set status = 'cancelled', error = $2 where id = $1`, [job.id, !lead ? "Lead removed" : lead.status === "unsubscribed" ? "Unsubscribed" : "Already contacted"]);
+        await q(`update email_log set status = 'cancelled', error = $2 where id = $1`, [
+          job.id,
+          !lead ? "Lead removed" : lead.status === "unsubscribed" ? "Unsubscribed" : "Already contacted",
+        ]);
         continue;
       }
-      const tpl = await getTemplate(job.kind);
+      const tpl = await getTemplate(job.kind, lead.category);
       const subject = render(tpl.subject, lead, s);
       const body = render(tpl.body, lead, s);
       const thread =
         job.kind === "followup"
-          ? (await one<{ message_id: string }>(`select message_id from email_log where lead_id = $1 and status = 'sent' and message_id is not null order by sent_at desc limit 1`, [lead.id]))?.message_id
+          ? (
+              await one<{ message_id: string }>(
+                `select message_id from email_log where lead_id = $1 and status = 'sent' and message_id is not null order by sent_at desc limit 1`,
+                [lead.id],
+              )
+            )?.message_id
           : null;
       try {
         const r = await sendMail({ to: job.recipient_email, subject, body, leadId: lead.id, inReplyTo: thread });
@@ -314,13 +507,16 @@ export async function processQueue(max = 25): Promise<string> {
           await q(`update leads set followups_sent = followups_sent + 1, last_email_at = now(), updated_at = now() where id = $1`, [lead.id]);
         }
         sent++;
-        await logRun("send", true, `${job.kind === "initial" ? "New-lead email" : "Follow-up"} sent to ${job.recipient_email} (${lead.company_name})`, { lead_id: lead.id, log_id: job.id });
+        await logRun("send", true, `${CATEGORY_LABEL[lead.category]} ${job.kind === "initial" ? "new-lead email" : "follow-up"} sent to ${job.recipient_email} (${lead.company_name})`, {
+          lead_id: lead.id,
+          log_id: job.id,
+        });
       } catch (e) {
         await q(`update email_log set status = 'failed', error = $2 where id = $1`, [job.id, (e as Error).message.slice(0, 400)]);
         await logRun("send", false, `Sending to ${job.recipient_email} failed: ${(e as Error).message}`);
         break;
       }
-      if (s.send_gap_min > 0) break; // one per tick when spacing is on; the next minute picks up the next one
+      if (s.send_gap_min > 0) break;
     }
     return `${sent} sent`;
   } finally {
@@ -336,17 +532,17 @@ async function noteOnce(key: string, msg: string) {
   await logRun("send", true, msg);
 }
 
-/** Leads that were enriched while auto-send was off are not picked up later; auto-send covers new arrivals. */
+/** Update D: categories with Auto-Send on (and a saved template) email every eligible enriched lead in that category, once. */
 export async function autoQueue(): Promise<number> {
   const s = await getSettings();
   let n = 0;
-  if (s.auto_send) {
-    const since = (await getSetting<string>("auto_send_since")) ?? new Date().toISOString();
+  for (const cat of CATEGORIES) {
+    if (!s.categories[cat]?.auto_send || !(await templateSaved(cat))) continue;
     const rows = await q<{ id: string }>(
-      `select id from leads where status = 'enriched' and direct_email is not null and auto_email_sent = false and updated_at >= $1
+      `select id from leads where category = $1 and status = 'enriched' and direct_email is not null and auto_email_sent = false
          and not exists (select 1 from email_log e where e.lead_id = leads.id and e.kind = 'initial')
        order by updated_at limit 50`,
-      [since],
+      [cat],
     );
     for (const r of rows) if ((await queueEmail(r.id, "initial", "auto")).ok) n++;
   }
@@ -365,6 +561,7 @@ export async function autoQueue(): Promise<number> {
 
 export async function tick(opts: { forceIngest?: boolean } = {}) {
   const out: Record<string, string> = {};
+  const t0 = Date.now();
   const step = async (name: string, fn: () => Promise<unknown>) => {
     try {
       out[name] = String(await fn());
@@ -375,8 +572,10 @@ export async function tick(opts: { forceIngest?: boolean } = {}) {
   };
   await setSetting("last_tick_at", new Date().toISOString());
   await step("ingest", () => ingest(opts.forceIngest));
+  await step("details", () => refreshDetails(Math.max(5_000, 30_000 - (Date.now() - t0))));
   await step("enrich", () => enrichPending());
   await step("poll", () => pollEnrichment());
+  await step("backfill", () => processBackfill(Math.max(3_000, 40_000 - (Date.now() - t0))));
   await step("inbox", async () => {
     if (!(await lease("inbox", 50))) return "busy";
     try {

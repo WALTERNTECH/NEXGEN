@@ -5,10 +5,17 @@ import { q, one } from "./db";
 export type Category = "tax" | "court" | "debt";
 export const CATEGORIES: Category[] = ["court", "tax", "debt"];
 export const CATEGORY_LABEL: Record<Category, string> = { tax: "Tax", court: "Court", debt: "Debt" };
+export const CATEGORY_NAME: Record<Category, string> = {
+  court: "Chapter 11 / Subchapter V Restructuring",
+  tax: "Tax Debt",
+  debt: "Commercial Debt Lawsuits",
+};
 
 export interface CategoryConf {
   on: boolean;
   query: string;
+  /** Update B: each category sends its own saved template automatically when this is on. */
+  auto_send: boolean;
 }
 
 export interface Settings {
@@ -35,14 +42,14 @@ export const DEFAULT_SETTINGS: Settings = {
   send_gap_min: 2,
   daily_limit: 50,
   ingest_every_min: 15,
-  lookback_days: 7,
+  lookback_days: 2,
   auto_followup_days: 0,
   sender_name: "",
   physical_address: "",
   categories: {
-    court: { on: true, query: DEFAULT_QUERIES.court },
-    tax: { on: true, query: DEFAULT_QUERIES.tax },
-    debt: { on: true, query: DEFAULT_QUERIES.debt },
+    court: { on: true, query: DEFAULT_QUERIES.court, auto_send: false },
+    tax: { on: true, query: DEFAULT_QUERIES.tax, auto_send: false },
+    debt: { on: true, query: DEFAULT_QUERIES.debt, auto_send: false },
   },
 };
 
@@ -61,13 +68,16 @@ export async function setSetting(key: string, value: unknown) {
 
 export async function getSettings(): Promise<Settings> {
   const s = (await getSetting<Partial<Settings>>("app")) ?? {};
-  const cats = { ...DEFAULT_SETTINGS.categories, ...(s.categories ?? {}) };
+  const cats = {} as Record<Category, CategoryConf>;
+  for (const c of CATEGORIES) cats[c] = { ...DEFAULT_SETTINGS.categories[c], ...(s.categories?.[c] ?? {}) };
   return { ...DEFAULT_SETTINGS, ...s, categories: cats };
 }
 
 export async function saveSettings(patch: Partial<Settings>) {
   const cur = await getSettings();
-  const next = { ...cur, ...patch, categories: { ...cur.categories, ...(patch.categories ?? {}) } };
+  const cats = { ...cur.categories };
+  for (const c of CATEGORIES) if (patch.categories?.[c]) cats[c] = { ...cur.categories[c], ...patch.categories[c] };
+  const next = { ...cur, ...patch, categories: cats };
   next.send_gap_min = clamp(next.send_gap_min, 0, 1440);
   next.daily_limit = clamp(next.daily_limit, 1, 2000);
   next.ingest_every_min = clamp(next.ingest_every_min, 1, 1440);
@@ -185,51 +195,84 @@ export function appUrl() {
   return "http://localhost:5340";
 }
 
-// ---- Email templates ----
+// ---- Email templates (Update B: one builder per category) ----
 
-export type TemplateId = "initial" | "followup";
+export type TemplateKind = "initial" | "followup";
 export interface Template {
-  id: TemplateId;
+  kind: TemplateKind;
+  category: Category;
   subject: string;
   body: string;
+  saved: boolean;
+  updated_at?: string | null;
 }
 
-export const DEFAULT_TEMPLATES: Record<TemplateId, Template> = {
-  initial: {
-    id: "initial",
-    subject: "{{company_name}} — a question about the {{distress_type}} filing",
-    body: `Hi {{first_name}},
+const SIGN = `\n\nBest regards,\n{{sender_name}}`;
 
-I saw that {{company_name}} has a {{distress_type}} matter on file ({{days_in_distress}} days ago). Owners in that position usually have a short window to restructure on their own terms before creditors set the pace.
-
-I help business owners work through tax, lender and court pressure and come out with the company still theirs. Would a 15-minute call this week be useful?
-
-Best regards,
-{{sender_name}}`,
+export const DEFAULT_TEMPLATES: Record<Category, Record<TemplateKind, { subject: string; body: string }>> = {
+  court: {
+    initial: {
+      subject: "{{company_name}} — your Chapter 11 case {{case_number}}",
+      body:
+        `Hi {{first_name}},\n\nI saw that {{company_name}} filed for {{distress_type}} {{days_in_distress}} days ago ({{insolvency_stage}}). ` +
+        `With {{exact_total_debt}} in liabilities on the schedules, the next few weeks decide how much of the plan you control.\n\n` +
+        `I work with owners in restructuring to keep the business theirs and the creditors aligned. Would a 15-minute call this week help?` +
+        SIGN,
+    },
+    followup: {
+      subject: "Re: {{company_name}} — your Chapter 11 case {{case_number}}",
+      body:
+        `Hi {{first_name}},\n\nFollowing up on my note about case {{case_number}}. If now isn't the right time, reply "not now" and I won't write again.` +
+        SIGN,
+    },
   },
-  followup: {
-    id: "followup",
-    subject: "Re: {{company_name}} — a question about the {{distress_type}} filing",
-    body: `Hi {{first_name}},
-
-Following up on my note from last week about {{company_name}}. If now isn't the right time, just reply "not now" and I won't write again.
-
-If it is, I can share how other owners in a similar position handled the first 30 days.
-
-Best regards,
-{{sender_name}}`,
+  tax: {
+    initial: {
+      subject: "{{company_name}} — the federal tax case {{case_number}}",
+      body:
+        `Hi {{first_name}},\n\nI noticed the government's tax suit against {{company_name}} (case {{case_number}}, filed {{days_in_distress}} days ago). ` +
+        `The amount at issue is {{exact_tax_debt}}.\n\nThere is usually room to settle, set up an installment plan or challenge the assessment before judgment. ` +
+        `Would a short call this week be useful?` +
+        SIGN,
+    },
+    followup: {
+      subject: "Re: {{company_name}} — the federal tax case {{case_number}}",
+      body: `Hi {{first_name}},\n\nCircling back on the tax case. If it's already handled, just reply and I'll close my file.` + SIGN,
+    },
+  },
+  debt: {
+    initial: {
+      subject: "{{company_name}} — the lawsuit filed {{days_in_distress}} days ago",
+      body:
+        `Hi {{first_name}},\n\nI saw the collection suit against {{company_name}} (case {{case_number}}, {{exact_total_debt}} claimed). ` +
+        `Lenders and cash-advance funders often settle for far less before judgment when the business has a plan.\n\n` +
+        `I help owners negotiate these down and keep operating. Open to a quick call?` +
+        SIGN,
+    },
+    followup: {
+      subject: "Re: {{company_name}} — the lawsuit filed {{days_in_distress}} days ago",
+      body: `Hi {{first_name}},\n\nFollowing up on the suit against {{company_name}}. If now isn't the right time, reply "not now" and I won't write again.` + SIGN,
+    },
   },
 };
 
-export async function getTemplate(id: TemplateId): Promise<Template> {
-  const r = await one<{ subject: string; body: string }>(`select subject, body from templates where id = $1`, [id]);
-  return r ? { id, subject: r.subject, body: r.body } : DEFAULT_TEMPLATES[id];
+const tid = (kind: TemplateKind, category: Category) => `${kind}:${category}`;
+
+export async function getTemplate(kind: TemplateKind, category: Category): Promise<Template> {
+  const r = await one<{ subject: string; body: string; updated_at: string }>(`select subject, body, updated_at from templates where id = $1`, [tid(kind, category)]);
+  if (r) return { kind, category, subject: r.subject, body: r.body, saved: true, updated_at: r.updated_at };
+  return { kind, category, ...DEFAULT_TEMPLATES[category][kind], saved: false, updated_at: null };
 }
 
-export async function saveTemplate(t: Template) {
+export async function saveTemplate(t: { kind: TemplateKind; category: Category; subject: string; body: string }) {
   await q(
     `insert into templates (id, subject, body, updated_at) values ($1, $2, $3, now())
      on conflict (id) do update set subject = excluded.subject, body = excluded.body, updated_at = now()`,
-    [t.id, t.subject, t.body],
+    [tid(t.kind, t.category), t.subject, t.body],
   );
+}
+
+/** Auto-send for a category only runs once its new-lead template has been saved. */
+export async function templateSaved(category: Category) {
+  return Boolean(await one(`select 1 from templates where id = $1`, [tid("initial", category)]));
 }

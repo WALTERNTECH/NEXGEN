@@ -1,6 +1,7 @@
 import { after } from "next/server";
 import { q, one } from "@/lib/db";
-import { getSettings, getSetting, secretSource, mailbox } from "@/lib/config";
+import { getSettings, getSetting, secretSource, mailbox, templateSaved, CATEGORIES } from "@/lib/config";
+import type { BackfillJob } from "@/lib/pipeline";
 import { mailReady } from "@/lib/mailer";
 import { tick } from "@/lib/pipeline";
 import { json } from "../_util";
@@ -11,21 +12,22 @@ export const maxDuration = 60;
 
 export async function GET() {
   const [leads, stats, perDay, sentPerDay, s, lastTick, lastIngest, subs, queue, unread] = await Promise.all([
-    q(`select ${LEAD_COLS} from leads order by created_at desc limit 600`),
+    q(`select ${LEAD_COLS} from leads order by is_historical_backfill asc, created_at desc limit 1500`),
     one(`select count(*) as total,
-           count(*) filter (where created_at > now() - interval '7 days') as total_7d,
+           count(*) filter (where created_at > now() - interval '7 days' and not is_historical_backfill) as total_7d,
+           count(*) filter (where is_historical_backfill) as backfill,
            count(*) filter (where direct_email is not null or direct_mobile is not null) as contacts,
            count(*) filter (where (direct_email is not null or direct_mobile is not null) and updated_at > now() - interval '7 days') as contacts_7d,
-           count(*) filter (where seen_at is null) as unseen,
+           count(*) filter (where seen_at is null and not is_historical_backfill) as unseen,
            count(*) filter (where status = 'replied') as replied,
            count(*) filter (where category = 'court') as court,
            count(*) filter (where category = 'tax') as tax,
            count(*) filter (where category = 'debt') as debt
          from leads`),
     q(`select to_char(d, 'YYYY-MM-DD') as day,
-           (select count(*) from leads where created_at::date = d and category = 'court') as court,
-           (select count(*) from leads where created_at::date = d and category = 'tax') as tax,
-           (select count(*) from leads where created_at::date = d and category = 'debt') as debt
+           (select count(*) from leads where created_at::date = d and category = 'court' and not is_historical_backfill) as court,
+           (select count(*) from leads where created_at::date = d and category = 'tax' and not is_historical_backfill) as tax,
+           (select count(*) from leads where created_at::date = d and category = 'debt' and not is_historical_backfill) as debt
          from generate_series(current_date - 29, current_date, interval '1 day') as g(d) order by d`),
     q(`select to_char(d, 'YYYY-MM-DD') as day, (select count(*) from email_log where status = 'sent' and sent_at::date = d) as sent
          from generate_series(current_date - 29, current_date, interval '1 day') as g(d) order by d`),
@@ -57,6 +59,8 @@ export async function GET() {
     stats: { ...stats, ...queue, unread_replies: unread?.n ?? 0 },
     perDay,
     sentPerDay,
+    templatesSaved: Object.fromEntries(await Promise.all(CATEGORIES.map(async (c) => [c, await templateSaved(c)]))),
+    backfill: await getSetting<BackfillJob>("backfill"),
     settings: { auto_send: s.auto_send, send_gap_min: s.send_gap_min, daily_limit: s.daily_limit, ingest_every_min: s.ingest_every_min, categories: s.categories },
     lastTick,
     lastIngest,

@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useFeed } from "@/components/feed";
 import { AreaChart, StackedBars, Donut } from "@/components/charts";
 import { LeadList } from "@/components/LeadList";
-import { ago } from "@/components/util";
+import { ago, CAT_LABEL, CATS } from "@/components/util";
 
 function Kpi({ label, value, delta, foot }: { label: string; value: number | string; delta?: string | null; foot?: string }) {
   return (
@@ -38,9 +38,18 @@ export default function Overview() {
             Court checks every {feed.settings.ingest_every_min} min · last {ago(feed.lastIngest)}
           </p>
         </div>
-        <Link href="/outreach" className={`pill ${feed.settings.auto_send ? "green" : "gray"}`} style={{ height: 30, padding: "0 12px" }}>
-          Auto-send {feed.settings.auto_send ? "ON" : "OFF"}
-        </Link>
+        <div className="row" style={{ gap: 6 }}>
+          {CATS.map((c) => (
+            <Link
+              key={c}
+              href={`/leads?cat=${c}`}
+              className={`pill ${feed.settings.categories[c]?.auto_send ? "green" : "gray"}`}
+              style={{ height: 28, padding: "0 10px" }}
+            >
+              {CAT_LABEL[c]} auto-send {feed.settings.categories[c]?.auto_send ? "ON" : "off"}
+            </Link>
+          ))}
+        </div>
       </div>
 
       {setupMissing.length > 0 && (
@@ -50,7 +59,7 @@ export default function Overview() {
       )}
 
       <div className="kpis">
-        <Kpi label="Distressed companies" value={s.total.toLocaleString()} delta={s.total_7d ? `+${s.total_7d} this week` : null} foot={`${s.unseen} not opened yet`} />
+        <Kpi label="Distressed companies" value={s.total.toLocaleString()} delta={s.total_7d ? `+${s.total_7d} this week` : null} foot={`${s.unseen} not opened yet${s.backfill ? ` · ${s.backfill} backfill` : ""}`} />
         <Kpi label="Direct contacts found" value={s.contacts.toLocaleString()} delta={s.contacts_7d ? `+${s.contacts_7d} this week` : null} foot={s.total ? `${Math.round((s.contacts / s.total) * 100)}% of leads` : undefined} />
         <Kpi label="Emails sent" value={s.sent.toLocaleString()} foot={`${s.sent_24h} in 24 h · ${s.queued} queued${s.failed ? ` · ${s.failed} failed` : ""}`} />
         <Kpi label="Replies" value={s.replied.toLocaleString()} foot={s.unread_replies ? `${s.unread_replies} unread` : "All read"} />

@@ -2,16 +2,23 @@
 
 import { useMemo, useState } from "react";
 import { useFeed } from "./feed";
-import { IMail, IPhone, IWhatsApp, ILinkedIn } from "./icons";
-import { api, CAT_COLOR, CAT_LABEL, contactState, daysSince, fmtDate, isNew, prettyPhone, telHref, waNumber, type Lead } from "./util";
+import { IMail, IPhone, IWhatsApp, IDetails } from "./icons";
+import { api, CAT_COLOR, CAT_LABEL, contactState, daysSince, fmtDate, isNew, prettyPhone, telHref, usd, waNumber, type Lead } from "./util";
 
+/** Update C: Send / Preview email, Call direct, WhatsApp, Open full case details. */
 export function ContactButtons({ l }: { l: Lead }) {
+  const { openLead } = useFeed();
   const stop = (e: React.MouseEvent) => e.stopPropagation();
   return (
     <div className="acts" onClick={stop}>
-      <a className={`act ${l.direct_email ? "" : "off"}`} href={l.direct_email ? `mailto:${l.direct_email}` : undefined} title="Email" aria-label="Email">
+      <button
+        className={`act ${l.direct_email ? "" : "off"}`}
+        onClick={() => openLead(l.id, "email")}
+        title={l.auto_email_sent ? "Preview / send follow-up" : "Preview / send email"}
+        aria-label="Preview and send email"
+      >
         <IMail />
-      </a>
+      </button>
       <a className={`act ${l.direct_mobile ? "" : "off"}`} href={l.direct_mobile ? telHref(l.direct_mobile) : undefined} title="Call" aria-label="Call">
         <IPhone />
       </a>
@@ -25,10 +32,22 @@ export function ContactButtons({ l }: { l: Lead }) {
       >
         <IWhatsApp />
       </a>
-      <a className={`act ${l.linkedin_url ? "" : "off"}`} href={l.linkedin_url ?? undefined} target="_blank" rel="noreferrer" title="LinkedIn" aria-label="LinkedIn">
-        <ILinkedIn />
-      </a>
+      <button className="act" onClick={() => openLead(l.id, "details")} title="Full case details" aria-label="Full case details">
+        <IDetails />
+      </button>
     </div>
+  );
+}
+
+function Money({ l }: { l: Lead }) {
+  const total = usd(l.debt_amount);
+  const tax = usd(l.tax_debt);
+  return (
+    <>
+      {total ? <b className="num">{total}</b> : l.liabilities_range ? <span className="num">{l.liabilities_range}</span> : <span className="muted">Not public yet</span>}
+      {tax && <div className="small num">Tax {tax}</div>}
+      {!tax && l.creditor_summary && <div className="small" style={{ maxWidth: 170, whiteSpace: "normal" }}>{l.creditor_summary}</div>}
+    </>
   );
 }
 
@@ -101,6 +120,22 @@ export function LeadList({ leads, selectable = true, empty }: { leads: Lead[]; s
     }
   };
 
+  // Update A: backfill rows (and misses) reach BetterContact only when you ask.
+  const enrichable = selectedLeads.filter((l) => (l.status === "not_enriched_backfill" || l.status === "enrichment_failed") && l.founder_full_name?.includes(" ")).length;
+  const enrichNow = async () => {
+    setBusy(true);
+    try {
+      const r = await api<{ result: string }>("/api/leads/bulk", { method: "POST", json: { action: "enrich", ids: selected } });
+      toast(/^sent/.test(r.result) ? `Enrich now: ${r.result.replace("sent", "sent")} to BetterContact` : r.result, !/^sent/.test(r.result));
+      setSel(new Set());
+      refresh();
+    } catch (e) {
+      toast((e as Error).message, true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const markSeen = async () => {
     await api("/api/leads/bulk", { method: "POST", json: { action: "seen", ids: selected } }).catch(() => {});
     setSel(new Set());
@@ -121,7 +156,7 @@ export function LeadList({ leads, selectable = true, empty }: { leads: Lead[]; s
                 </th>
               )}
               <th>Company</th>
-              <th>Debt</th>
+              <th>Total debt / tax</th>
               <th>Filed</th>
               <th>Owner</th>
               <th>Contact</th>
@@ -142,6 +177,7 @@ export function LeadList({ leads, selectable = true, empty }: { leads: Lead[]; s
                   <td style={{ maxWidth: 300 }}>
                     <div className="co">
                       {l.company_name} {isNew(l) && <span className="pill new">NEW</span>}
+                      {l.is_historical_backfill && <span className="pill gray">BACKFILL</span>}
                     </div>
                     <div className="small">
                       <span className="cat" style={{ marginRight: 8 }}>
@@ -151,9 +187,8 @@ export function LeadList({ leads, selectable = true, empty }: { leads: Lead[]; s
                       {l.distress_type}
                     </div>
                   </td>
-                  <td className="num nowrap">
-                    {l.debt_amount_text ?? <span className="muted">—</span>}
-                    {l.creditor_summary && <div className="small" style={{ maxWidth: 160, whiteSpace: "normal" }}>{l.creditor_summary}</div>}
+                  <td className="nowrap">
+                    <Money l={l} />
                   </td>
                   <td className="nowrap">
                     {fmtDate(l.filing_date)}
@@ -208,7 +243,8 @@ export function LeadList({ leads, selectable = true, empty }: { leads: Lead[]; s
                       <i style={{ background: CAT_COLOR[l.category] }} />
                       {CAT_LABEL[l.category]}
                     </span>
-                    {l.debt_amount_text ? `${l.debt_amount_text} · ` : ""}
+                    {usd(l.debt_amount) ? `${usd(l.debt_amount)} · ` : ""}
+                    {usd(l.tax_debt) ? `Tax ${usd(l.tax_debt)} · ` : ""}
                     {fmtDate(l.filing_date)}
                     {days !== null ? ` · ${days}d` : ""}
                   </div>
@@ -216,6 +252,7 @@ export function LeadList({ leads, selectable = true, empty }: { leads: Lead[]; s
               </div>
               <div className="row" style={{ gap: 6 }}>
                 {isNew(l) && <span className="pill new">NEW</span>}
+                {l.is_historical_backfill && <span className="pill gray">BACKFILL</span>}
                 <span className={`pill ${st.tone}`}>{st.label}</span>
               </div>
               {l.founder_full_name && (
@@ -252,6 +289,11 @@ export function LeadList({ leads, selectable = true, empty }: { leads: Lead[]; s
             </span>
           )}
           <span style={{ flex: 1 }} />
+          {enrichable > 0 && (
+            <button className="btn ghost" onClick={enrichNow} disabled={busy}>
+              Enrich now ({enrichable})
+            </button>
+          )}
           <button className="btn ghost" onClick={markSeen}>
             Mark seen
           </button>

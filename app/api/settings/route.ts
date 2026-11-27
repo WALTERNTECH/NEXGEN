@@ -7,7 +7,9 @@ import {
   saveMailbox,
   presetFor,
   appUrl,
-  setSetting,
+  CATEGORIES,
+  CATEGORY_LABEL,
+  templateSaved,
   SECRET_NAMES,
   DEFAULT_QUERIES,
   type SecretName,
@@ -66,9 +68,15 @@ export async function PUT(req: Request) {
   }>(req);
   if (b.settings) {
     const before = await getSettings();
+    // Update B: a category's Auto-Send can only go on once that category's new-lead email has been saved.
+    for (const c of CATEGORIES) {
+      if (b.settings.categories?.[c]?.auto_send && !before.categories[c].auto_send && !(await templateSaved(c)))
+        return bad(`Save the ${CATEGORY_LABEL[c]} new-lead email first, then turn on Auto-Send.`);
+    }
     const after = await saveSettings(b.settings);
-    if (!before.auto_send && after.auto_send) await setSetting("auto_send_since", new Date().toISOString());
-    if (before.auto_send !== after.auto_send) await logRun("system", true, `Auto-send turned ${after.auto_send ? "ON" : "OFF"}`);
+    for (const c of CATEGORIES)
+      if (before.categories[c].auto_send !== after.categories[c].auto_send)
+        await logRun("system", true, `${CATEGORY_LABEL[c]} Auto-Send turned ${after.categories[c].auto_send ? "ON" : "OFF"}`);
   }
   if (b.secrets) {
     for (const [k, v] of Object.entries(b.secrets)) {

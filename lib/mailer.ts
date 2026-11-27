@@ -3,37 +3,15 @@ import nodemailer from "nodemailer";
 import { randomBytes } from "node:crypto";
 import { appUrl, mailbox, secret, getSettings, type Settings } from "./config";
 
-export interface LeadVars {
+import { render as renderText, type RenderLead } from "./render";
+
+export interface LeadVars extends RenderLead {
   [k: string]: unknown;
   id: string;
-  company_name: string;
-  founder_full_name: string | null;
-  founder_first_name: string | null;
-  debt_amount_text: string | null;
-  distress_type: string | null;
-  filing_date: string | null;
-  case_number: string | null;
-  court_name: string | null;
-}
-
-export function daysSince(date: string | null) {
-  if (!date) return 0;
-  return Math.max(0, Math.floor((Date.now() - Date.parse(date)) / 86_400_000));
 }
 
 export function render(text: string, l: LeadVars, s: Pick<Settings, "sender_name">) {
-  const vars: Record<string, string> = {
-    first_name: l.founder_first_name || "there",
-    full_name: l.founder_full_name || "",
-    company_name: l.company_name,
-    debt_amount: l.debt_amount_text || "the outstanding balance",
-    distress_type: l.distress_type || "court",
-    days_in_distress: String(daysSince(l.filing_date)),
-    case_number: l.case_number || "",
-    court_name: l.court_name || "",
-    sender_name: s.sender_name || "",
-  };
-  return text.replace(/\{\{\s*([a-z_]+)\s*\}\}/g, (m, k) => (k in vars ? vars[k] : m));
+  return renderText(text, l, s.sender_name);
 }
 
 function esc(s: string) {

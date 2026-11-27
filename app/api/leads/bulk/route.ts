@@ -15,8 +15,16 @@ export async function POST(req: Request) {
     return json({ ok: true });
   }
   if (b.action === "enrich") {
-    await q(`update leads set status = 'discovered', bc_job_id = null where id = any($1) and status = 'enrichment_failed' and founder_last_name is not null`, [ids]);
-    return json({ ok: true, result: await enrichPending() });
+    // Explicit Enrich now on selected rows (also the only way backfill rows reach BetterContact).
+    const rows = await q<{ id: string }>(
+      `update leads set status = 'discovered', bc_job_id = null
+       where id = any($1) and status in ('enrichment_failed','not_enriched_backfill')
+         and founder_last_name is not null and founder_last_name <> ''
+       returning id`,
+      [ids],
+    );
+    if (!rows.length) return bad("None of the selected leads has an owner name to search for");
+    return json({ ok: true, result: await enrichPending(rows.map((r) => r.id)) });
   }
   if (b.action === "send") {
     if (b.kind !== "initial" && b.kind !== "followup") return bad("Choose New-lead email or Follow-up email");

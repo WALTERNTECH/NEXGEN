@@ -334,3 +334,17 @@ h3 { font-size: 14px; }
   .top .btn.primary { width: 38px; padding: 0; }
   .top { gap: 8px; }
 }
+
+/* Update C: exact figures + case notes */
+.figs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.fig { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 2px; }
+.fig span { font-size: 12px; color: var(--ink-3); }
+.fig b { font-size: 16px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.notes { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; max-height: 320px; overflow-y: auto; }
+.note { display: grid; grid-template-columns: 92px 1fr; gap: 8px; font-size: 13px; border-bottom: 1px solid var(--line); padding-bottom: 6px; }
+.cat-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.backfill-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; gap: 10px; align-items: end; }
+@media (max-width: 820px) {
+  .backfill-form { grid-template-columns: 1fr 1fr; }
+  .note { grid-template-columns: 1fr; gap: 2px; }
+}

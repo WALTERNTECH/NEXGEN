@@ -12,6 +12,12 @@ export interface ClDoc {
   absolute_url?: string;
 }
 
+export interface ClEntry extends ClDoc {
+  id?: number;
+  is_available?: boolean;
+  page_count?: number | null;
+}
+
 export interface ClDocket {
   docket_id: number;
   caseName: string;
@@ -26,6 +32,7 @@ export interface ClDocket {
   attorney?: string[];
   firm?: string[];
   trustee_str?: string;
+  assignedTo?: string;
   absolute_url?: string;
   docket_absolute_url?: string;
   recap_documents?: ClDoc[];
@@ -43,22 +50,37 @@ async function clFetch(url: string) {
   return r.json();
 }
 
-function ymd(d: Date) {
+export function ymd(d: Date) {
   return d.toISOString().slice(0, 10);
 }
 
-/** Newest dockets for one category, filed within the look-back window. */
-export async function searchCategory(category: Category, query: string, lookbackDays: number, maxPages = 3): Promise<ClDocket[]> {
-  const after = ymd(new Date(Date.now() - lookbackDays * 86_400_000));
-  const params = new URLSearchParams({ type: "r", q: query, order_by: "dateFiled desc", filed_after: after });
-  let url: string | null = `${BASE}/search/?${params}`;
+export interface SearchPage {
+  dockets: ClDocket[];
+  next: string | null;
+  count: number | null;
+}
+
+/**
+ * One category's dockets between two dates. Pass `cursor` (the `next` URL from a previous page) to continue.
+ * Incoming crawls use a short look-back; backfills pass an explicit date range.
+ */
+export async function searchCategory(
+  category: Category,
+  query: string,
+  opts: { after: string; before?: string | null; cursor?: string | null; maxPages?: number },
+): Promise<SearchPage> {
+  const params = new URLSearchParams({ type: "r", q: query, order_by: "dateFiled desc", filed_after: opts.after });
+  if (opts.before) params.set("filed_before", opts.before);
+  let url: string | null = opts.cursor ?? `${BASE}/search/?${params}`;
   const out: ClDocket[] = [];
-  for (let page = 0; url && page < maxPages; page++) {
-    const j = (await clFetch(url)) as { results?: ClDocket[]; next?: string | null };
+  let count: number | null = null;
+  for (let page = 0; url && page < (opts.maxPages ?? 3); page++) {
+    const j = (await clFetch(url)) as { results?: ClDocket[]; next?: string | null; count?: number };
+    count ??= j.count ?? null;
     for (const d of j.results ?? []) if (fitsCategory(category, d)) out.push(d);
     url = j.next ?? null;
   }
-  return out;
+  return { dockets: out, next: url, count };
 }
 
 export function isBankruptcyCourt(courtId = "") {
@@ -69,19 +91,39 @@ function fitsCategory(category: Category, d: ClDocket) {
   if (!d.docket_id || !d.caseName) return false;
   const bk = isBankruptcyCourt(d.court_id);
   if (category === "court") return bk;
-  // Tax and debt suits are civil cases in district courts.
   return !bk;
 }
 
-/** Documents in one docket that tend to name the person who signed for the company. */
-export async function signerDocs(docketId: number): Promise<ClDoc[]> {
-  const q = `docket_id:${docketId} AND (declaration OR petition OR "corporate ownership" OR resolution OR "statement of financial affairs" OR schedules OR summons OR complaint)`;
-  const params = new URLSearchParams({ type: "rd", q, order_by: "entry_date_filed asc" });
+/** Every public docket entry (first page, oldest first) — used for signer names, case notes and documents to read. */
+export async function docketEntries(docketId: number): Promise<ClEntry[]> {
+  const params = new URLSearchParams({ type: "rd", q: `docket_id:${docketId}`, order_by: "entry_date_filed asc" });
   try {
-    const j = (await clFetch(`${BASE}/search/?${params}`)) as { results?: ClDoc[] };
-    return (j.results ?? []).slice(0, 20);
+    const j = (await clFetch(`${BASE}/search/?${params}`)) as { results?: ClEntry[] };
+    return j.results ?? [];
   } catch {
     return [];
+  }
+}
+
+/** Plain text of a public RECAP document, when CourtListener has it. */
+export async function documentText(id: number): Promise<string | null> {
+  try {
+    const j = (await clFetch(`${BASE}/recap-documents/${id}/?fields=plain_text,is_available`)) as { plain_text?: string };
+    const t = (j.plain_text ?? "").trim();
+    return t.length > 40 ? t : null;
+  } catch {
+    return null;
+  }
+}
+
+/** A docket by id, in the same shape as a search hit (used to refresh case details later). */
+export async function docketById(docketId: number): Promise<ClDocket | null> {
+  const params = new URLSearchParams({ type: "r", q: `docket_id:${docketId}` });
+  try {
+    const j = (await clFetch(`${BASE}/search/?${params}`)) as { results?: ClDocket[] };
+    return j.results?.[0] ?? null;
+  } catch {
+    return null;
   }
 }
 

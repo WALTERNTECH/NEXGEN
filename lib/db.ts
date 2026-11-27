@@ -187,6 +187,25 @@ create table if not exists leases (
   until timestamptz not null
 );
 
+-- Update A: incoming vs historical backfill.
+alter table leads add column if not exists is_historical_backfill boolean not null default false;
+-- Update C: exact figures and full case details.
+alter table leads add column if not exists tax_debt numeric;
+alter table leads add column if not exists secured_debt numeric;
+alter table leads add column if not exists unsecured_debt numeric;
+alter table leads add column if not exists priority_debt numeric;
+alter table leads add column if not exists liabilities_range text;
+alter table leads add column if not exists figures_source text;
+alter table leads add column if not exists judge text;
+alter table leads add column if not exists trustee text;
+alter table leads add column if not exists dba text;
+alter table leads add column if not exists case_summary text;
+alter table leads add column if not exists case_notes jsonb;
+alter table leads add column if not exists details_checked_at timestamptz;
+create index if not exists leads_category_idx on leads (category, created_at desc);
+-- Update D: a lead can receive the new-lead email once, and an address can receive it once.
+create unique index if not exists email_log_initial_lead_once on email_log (lead_id) where kind = 'initial';
+
 -- Token the database scheduler (pg_cron) uses to call /api/cron/tick; never leaves the database.
 insert into settings (key, value) values ('cron_token', to_jsonb(md5(random()::text || clock_timestamp()::text) || md5(random()::text || clock_timestamp()::text)))
 on conflict (key) do nothing;

@@ -21,7 +21,21 @@ export interface Feed {
     sent_24h: number;
     failed: number;
     unread_replies: number;
+    backfill: number;
   };
+  templatesSaved: Record<Category, boolean>;
+  backfill: {
+    from: string;
+    to: string;
+    categories: Category[];
+    done: Category[];
+    added: Record<Category, number>;
+    scanned: number;
+    status: "running" | "done" | "cancelled" | "error";
+    error?: string | null;
+    started_at: string;
+    finished_at?: string | null;
+  } | null;
   perDay: { day: string; court: number; tax: number; debt: number }[];
   sentPerDay: { day: string; sent: number }[];
   settings: {
@@ -29,7 +43,7 @@ export interface Feed {
     send_gap_min: number;
     daily_limit: number;
     ingest_every_min: number;
-    categories: Record<Category, { on: boolean; query: string }>;
+    categories: Record<Category, { on: boolean; query: string; auto_send: boolean }>;
   };
   lastTick: string | null;
   lastIngest: string | null;
@@ -58,8 +72,9 @@ interface Ctx {
   sync: () => Promise<void>;
   toast: (text: string, err?: boolean) => void;
   toasts: Toast[];
-  openLead: (id: string | null) => void;
+  openLead: (id: string | null, focus?: "email" | "details" | null) => void;
   leadId: string | null;
+  leadFocus: "email" | "details" | null;
   fresh: Set<string>;
   search: string;
   setSearch: (s: string) => void;
@@ -82,6 +97,7 @@ export function FeedProvider({ children }: { children: React.ReactNode }) {
   const [syncing, setSyncing] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [leadId, setLeadId] = useState<string | null>(null);
+  const [leadFocus, setLeadFocus] = useState<"email" | "details" | null>(null);
   const [fresh, setFresh] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
   const known = useRef<Set<string> | null>(null);
@@ -132,8 +148,9 @@ export function FeedProvider({ children }: { children: React.ReactNode }) {
     }
   }, [refresh, toast]);
 
-  const openLead = useCallback((id: string | null) => {
+  const openLead = useCallback((id: string | null, focus: "email" | "details" | null = null) => {
     setLeadId(id);
+    setLeadFocus(focus);
     const u = new URL(window.location.href);
     if (id) u.searchParams.set("lead", id);
     else u.searchParams.delete("lead");
@@ -166,7 +183,7 @@ export function FeedProvider({ children }: { children: React.ReactNode }) {
   }, [feed?.stats.unseen, feed?.stats.unread_replies]);
 
   return (
-    <FeedCtx.Provider value={{ feed, error, updatedAt, refresh, syncing, sync, toast, toasts, openLead, leadId, fresh, search, setSearch }}>
+    <FeedCtx.Provider value={{ feed, error, updatedAt, refresh, syncing, sync, toast, toasts, openLead, leadId, leadFocus, fresh, search, setSearch }}>
       {children}
     </FeedCtx.Provider>
   );

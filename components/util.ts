@@ -34,9 +34,27 @@ export interface Lead {
   cl_url: string | null;
   created_at: string;
   queued: string | null;
+  is_historical_backfill: boolean;
+  tax_debt: number | null;
+  secured_debt: number | null;
+  unsecured_debt: number | null;
+  priority_debt: number | null;
+  liabilities_range: string | null;
+  figures_source: string | null;
+  judge: string | null;
+  trustee: string | null;
+  dba: string | null;
+  details_checked_at: string | null;
+  case_summary?: string | null;
+  case_notes?: { date: string | null; no: string | null; text: string }[] | null;
 }
 
 export const CAT_LABEL: Record<Category, string> = { court: "Court", tax: "Tax", debt: "Debt" };
+export const CAT_NAME: Record<Category, string> = {
+  court: "Chapter 11 / Subchapter V Restructuring",
+  tax: "Tax Debt",
+  debt: "Commercial Debt Lawsuits",
+};
 export const CAT_COLOR: Record<Category, string> = { court: "var(--court)", tax: "var(--tax)", debt: "var(--debt)" };
 export const CAT_HEX: Record<Category, string> = { court: "#2a78d6", tax: "#eb6834", debt: "#1baf7a" };
 export const CATS: Category[] = ["court", "tax", "debt"];
@@ -88,7 +106,13 @@ export function prettyPhone(phone: string) {
 }
 
 export function isNew(l: Lead) {
-  return !l.seen_at;
+  return !l.seen_at && !l.is_historical_backfill;
+}
+
+export function usd(v: number | string | null | undefined) {
+  const n = typeof v === "string" ? Number(v) : v;
+  if (n === null || n === undefined || !Number.isFinite(n) || n <= 0) return null;
+  return "$" + n.toLocaleString("en-US", { maximumFractionDigits: n % 1 ? 2 : 0, minimumFractionDigits: n % 1 ? 2 : 0 });
 }
 
 export type Tone = "gray" | "green" | "amber" | "red" | "violet" | "blue";
@@ -102,6 +126,8 @@ export function contactState(l: Lead): { label: string; tone: Tone } {
   if (l.auto_email_sent)
     return { label: l.followups_sent ? `Contacted · ${l.followups_sent} follow-up${l.followups_sent > 1 ? "s" : ""}` : "Contacted", tone: "green" };
   if (l.status === "enriching") return { label: "Finding contact…", tone: "blue" };
+  if (l.status === "pending_details") return { label: "Reading case…", tone: "blue" };
+  if (l.status === "not_enriched_backfill") return { label: "Backfill · not enriched", tone: "gray" };
   if (l.status === "enrichment_failed") return { label: l.founder_full_name ? "No contact found" : "Owner unknown", tone: "gray" };
   if (l.status === "discovered") return { label: "Finding contact…", tone: "blue" };
   return { label: "Not contacted", tone: "gray" };

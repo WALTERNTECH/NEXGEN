@@ -2,24 +2,36 @@ import { after } from "next/server";
 import { q, one } from "@/lib/db";
 import { LEAD_COLS } from "@/lib/leads";
 import { splitFullName } from "@/lib/extract";
-import { queueEmail, processQueue, enrichPending, type EmailKind } from "@/lib/pipeline";
+import { queueEmail, processQueue, enrichPending, refreshDetails, type EmailKind } from "@/lib/pipeline";
+import { getSettings, getTemplate, type Category } from "@/lib/config";
+import { render } from "@/lib/render";
 import { sendMail } from "@/lib/mailer";
 import { logRun } from "@/lib/runs";
 import { json, bad, body } from "../../_util";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+export const maxDuration = 120;
 
 type Ctx = { params: Promise<{ id: string }> };
 
 async function detail(id: string) {
-  const lead = await one(`select ${LEAD_COLS}, raw from leads where id = $1`, [id]);
+  const lead = await one<{ category: Category; company_name: string } & Record<string, unknown>>(
+    `select ${LEAD_COLS}, raw, case_summary, case_notes from leads where id = $1`,
+    [id],
+  );
   if (!lead) return null;
+  const s = await getSettings();
+  // Update B: the preview is this lead's own category template, filled in with its figures.
+  const preview: Record<string, { subject: string; body: string; saved: boolean }> = {};
+  for (const k of ["initial", "followup"] as const) {
+    const t = await getTemplate(k, lead.category);
+    preview[k] = { subject: render(t.subject, lead, s.sender_name), body: render(t.body, lead, s.sender_name), saved: t.saved };
+  }
   const [emails, replies] = await Promise.all([
     q(`select id, kind, recipient_email, subject, body, status, origin, error, created_at, sent_at from email_log where lead_id = $1 order by created_at`, [id]),
     q(`select id, from_email, from_name, subject, body, received_at, is_read from replies where lead_id = $1 order by received_at`, [id]),
   ]);
-  return { lead, emails, replies };
+  return { lead, emails, replies, preview, physical_address: s.physical_address };
 }
 
 export async function GET(_: Request, { params }: Ctx) {
@@ -90,13 +102,17 @@ export async function POST(req: Request, { params }: Ctx) {
   const b = await body<{ action?: string; kind?: EmailKind; subject?: string; message?: string }>(req);
   if (b.action === "enrich") {
     const l = await one<{ founder_last_name: string | null }>(
-      `update leads set status = 'discovered', bc_job_id = null where id = $1 and status in ('discovered','enrichment_failed') returning founder_last_name`,
+      `update leads set status = 'discovered', bc_job_id = null where id = $1 and status in ('discovered','enrichment_failed','not_enriched_backfill','pending_details') returning founder_last_name`,
       [id],
     );
     if (!l) return bad("This lead is already enriched or being enriched");
     if (!l.founder_last_name) return bad("Add the owner's full name first");
     const r = await enrichPending(id);
     return /^sent/.test(r) ? json({ ok: true, result: r, ...(await detail(id)) }) : bad(r);
+  }
+  if (b.action === "details") {
+    await refreshDetails(50_000, id);
+    return json({ ok: true, ...(await detail(id)) });
   }
   if (b.action === "send") {
     if (b.kind !== "initial" && b.kind !== "followup") return bad("Choose which email to send");
