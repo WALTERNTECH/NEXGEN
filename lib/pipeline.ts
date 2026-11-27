@@ -92,21 +92,28 @@ export async function ingest(force = false): Promise<string> {
     const added: Record<Category, number> = { court: 0, tax: 0, debt: 0 };
     const errors: string[] = [];
     let limited = false;
+    const seen: Partial<Record<Category, { found: number; known: number; skipped: number }>> = {};
     for (const cat of due) {
       const conf = s.categories[cat];
       try {
-        const { dockets } = await searchCategory(cat, conf.query, { after, maxPages: 2 });
+        const { dockets, count } = await searchCategory(cat, conf.query, { after, maxPages: 2 });
+        const st = { found: count ?? dockets.length, known: 0, skipped: 0 };
         for (const d of dockets) {
           if (added[cat] >= MAX_NEW_PER_CATEGORY) break;
-          if ((await storeDocket(cat, d, false)) === "new") added[cat]++;
+          const r = await storeDocket(cat, d, false);
+          if (r === "new") added[cat]++;
+          else if (r === "known") st.known++;
+          else st.skipped++;
         }
+        seen[cat] = st;
         state[cat] = new Date().toISOString();
       } catch (e) {
         if (e instanceof RateLimited) {
           limited = true;
           break;
         }
-        state[cat] = new Date().toISOString();
+        // A timeout is CourtListener being slow: try again next minute instead of waiting a full interval.
+        if (!/timeout|aborted/i.test((e as Error).message)) state[cat] = new Date().toISOString();
         errors.push(`${CATEGORY_LABEL[cat]}: ${(e as Error).message}`);
       }
     }
@@ -116,9 +123,14 @@ export async function ingest(force = false): Promise<string> {
     const total = added.court + added.tax + added.debt;
     const summary =
       `Incoming: ${total} new lead${total === 1 ? "" : "s"}` +
-      (total ? ` (Court ${added.court}, Tax ${added.tax}, Debt ${added.debt})` : "") +
+      (Object.keys(seen).length
+        ? " — " +
+          (Object.entries(seen) as [Category, { found: number; known: number; skipped: number }][])
+            .map(([c, v]) => `${CATEGORY_LABEL[c]}: ${added[c]} new of ${v.found} matching filings (${v.known} already saved, ${v.skipped} not a distressed business)`)
+            .join("; ")
+        : "") +
       (errors.length ? ` — ${errors.join("; ")}` : "");
-    await logRun("ingest", errors.length === 0, summary, { added, errors, after });
+    await logRun("ingest", errors.length === 0, summary, { added, errors, after, seen });
     if (total) {
       await notify({
         title: `${total} new distressed lead${total === 1 ? "" : "s"}`,

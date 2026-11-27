@@ -72,7 +72,7 @@ async function clFetch(url: string) {
   const r = await fetch(url, {
     headers: { Authorization: `Token ${key}`, Accept: "application/json", "User-Agent": "nexgen-dashboard" },
     cache: "no-store",
-    signal: AbortSignal.timeout(25_000),
+    signal: AbortSignal.timeout(40_000),
   });
   if (r.status === 429) {
     await exhaust(bucket);
