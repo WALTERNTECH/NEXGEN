@@ -8,6 +8,9 @@ import {
   presetFor,
   appUrl,
   CATEGORIES,
+  rawSecret,
+  keyShape,
+  secret,
   CATEGORY_LABEL,
   templateSaved,
   SECRET_NAMES,
@@ -46,7 +49,14 @@ export async function GET(req: Request) {
     try {
       return json({ ok: true, message: await ping() });
     } catch (e) {
-      return json({ ok: false, message: (e as Error).message });
+      const raw = await rawSecret("COURTLISTENER_API_KEY");
+      const m = (e as Error).message;
+      return json({
+        ok: false,
+        message: /401|403/.test(m)
+          ? `CourtListener didn't accept this token (${raw ? keyShape("COURTLISTENER_API_KEY", raw) : "none saved"}). Copy only the long code shown under "Your API Token" on courtlistener.com and Save again.`
+          : m,
+      });
     }
   }
   if (check === "bettercontact") {
@@ -54,7 +64,19 @@ export async function GET(req: Request) {
       const a = await account();
       return json({ ok: true, message: `connected — ${a.credits_left ?? "?"} credits left` });
     } catch (e) {
-      return json({ ok: false, message: (e as Error).message });
+      // /account can be restricted on some plans; an enrichment lookup tells us whether the key itself is valid.
+      const k = await secret("BETTERCONTACT_API_KEY");
+      if (k) {
+        const r = await fetch("https://app.bettercontact.rocks/api/v2/async/nexgen-key-check", { headers: { "X-API-Key": k }, cache: "no-store" }).catch(() => null);
+        if (r && r.status !== 401 && r.status !== 403) return json({ ok: true, message: "key accepted by BetterContact" });
+      }
+      const raw = await rawSecret("BETTERCONTACT_API_KEY");
+      return json({
+        ok: false,
+        message: /401|403/.test((e as Error).message)
+          ? `BetterContact didn't accept this key (${raw ? keyShape("BETTERCONTACT_API_KEY", raw) : "none saved"}). In BetterContact open the API page, copy the API key itself (not the example code) and Save again.`
+          : (e as Error).message,
+      });
     }
   }
   return json(await view());

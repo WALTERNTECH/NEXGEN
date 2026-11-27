@@ -118,9 +118,37 @@ export function unseal(blob: string) {
 export type SecretName = "COURTLISTENER_API_KEY" | "BETTERCONTACT_API_KEY" | "OPENAI_API_KEY" | "RESEND_API_KEY";
 export const SECRET_NAMES: SecretName[] = ["COURTLISTENER_API_KEY", "BETTERCONTACT_API_KEY", "OPENAI_API_KEY", "RESEND_API_KEY"];
 
-export async function secret(name: SecretName): Promise<string | null> {
+/**
+ * API keys never contain spaces. Pasting often brings extras along: "Token abc…", "X-API-Key: abc…",
+ * "BETTERCONTACT_API_KEY=abc…", quotes, line breaks or invisible characters. Strip all of that.
+ */
+export function cleanKey(name: SecretName, raw: string): string {
+  let k = raw.replace(/[​-‍⁠﻿ ]/g, " ").trim();
+  k = k.replace(/^["'`]+|["'`;,]+$/g, "").trim();
+  k = k.replace(/^[A-Z_]*API_KEY\s*[=:]\s*/i, "");
+  k = k.replace(/^(authorization\s*:\s*)?(token|bearer)\s+/i, "");
+  k = k.replace(/^x-api-key\s*:\s*/i, "");
+  k = k.replace(/^["'`]+|["'`;,]+$/g, "");
+  k = k.replace(/\s+/g, "");
+  if (name === "COURTLISTENER_API_KEY") {
+    const hex = /[0-9a-f]{40}/i.exec(k);
+    if (hex) k = hex[0];
+  }
+  return k;
+}
+
+/** A description of a key's shape that is safe to show: never the key itself. */
+export function keyShape(name: SecretName, raw: string) {
+  const cleaned = cleanKey(name, raw);
+  const notes: string[] = [`saved key is ${cleaned.length} characters`];
+  if (raw.trim() !== cleaned) notes.push("extra text/spaces around it are now ignored");
+  if (name === "COURTLISTENER_API_KEY" && !/^[0-9a-f]{40}$/i.test(cleaned)) notes.push("a CourtListener token is exactly 40 characters of 0-9 and a-f");
+  return notes.join("; ");
+}
+
+export async function rawSecret(name: SecretName): Promise<string | null> {
   const env = process.env[name];
-  if (env) return env.trim();
+  if (env) return env;
   const v = await getSetting<string>(`secret:${name}`);
   if (!v) return null;
   try {
@@ -130,9 +158,16 @@ export async function secret(name: SecretName): Promise<string | null> {
   }
 }
 
+export async function secret(name: SecretName): Promise<string | null> {
+  const raw = await rawSecret(name);
+  const k = raw ? cleanKey(name, raw) : null;
+  return k || null;
+}
+
 export async function saveSecret(name: SecretName, value: string | null) {
-  if (!value) await q(`delete from settings where key = $1`, [`secret:${name}`]);
-  else await setSetting(`secret:${name}`, seal(value.trim()));
+  const k = value ? cleanKey(name, value) : "";
+  if (!k) await q(`delete from settings where key = $1`, [`secret:${name}`]);
+  else await setSetting(`secret:${name}`, seal(k));
 }
 
 export async function secretSource(name: SecretName): Promise<"env" | "saved" | null> {
