@@ -12,7 +12,8 @@ import {
   type Category,
 } from "./config";
 import { q, one, tx, lease, release } from "./db";
-import { searchCategory, docketById, docketUrl, ymd, type ClDocket } from "./courtlistener";
+import { searchCategory, docketUrl, ymd, RateLimited, type ClDocket } from "./courtlistener";
+import { splitFullName } from "./extract";
 import { companyFor, heuristicExtract, llmRefine } from "./extract";
 import { caseDetails } from "./figures";
 import { money } from "./render";
@@ -65,7 +66,7 @@ async function storeDocket(cat: Category, d: ClDocket, backfill: boolean): Promi
       x.founderSource,
       status,
       docketUrl(d),
-      JSON.stringify({ party: d.party?.slice(0, 40), suitNature: d.suitNature, cause: d.cause, chapter: d.chapter, docket_id: d.docket_id }),
+      JSON.stringify({ party: d.party?.slice(0, 40), suitNature: d.suitNature, cause: d.cause, chapter: d.chapter, docket_id: d.docket_id, docket_absolute_url: d.docket_absolute_url }),
       backfill,
       d.assignedTo || null,
       d.trustee_str || null,
@@ -77,10 +78,12 @@ async function storeDocket(cat: Category, d: ClDocket, backfill: boolean): Promi
 /** Incoming live crawl: only the newest filings (look-back in days, default 2). These get enriched automatically. */
 export async function ingest(force = false): Promise<string> {
   const s = await getSettings();
-  if (!force) {
-    const last = await getSetting<string>("last_ingest_at");
-    if (last && Date.now() - Date.parse(last) < s.ingest_every_min * 60_000) return "not due";
-  }
+  // Each category is checked on its own schedule, so a rate-limited minute only delays the categories it didn't reach.
+  const state = (await getSetting<Partial<Record<Category, string>>>("ingest_state")) ?? {};
+  const due = CATEGORIES.filter(
+    (c) => s.categories[c]?.on && s.categories[c].query.trim() && (force || !state[c] || Date.now() - Date.parse(state[c]!) >= s.ingest_every_min * 60_000),
+  );
+  if (!due.length) return "not due";
   if (!(await secret("COURTLISTENER_API_KEY"))) return "no CourtListener key";
   if (!(await lease("ingest", 120))) return "already running";
   try {
@@ -88,19 +91,28 @@ export async function ingest(force = false): Promise<string> {
     const after = ymd(new Date(Date.now() - s.lookback_days * 86_400_000));
     const added: Record<Category, number> = { court: 0, tax: 0, debt: 0 };
     const errors: string[] = [];
-    for (const cat of CATEGORIES) {
+    let limited = false;
+    for (const cat of due) {
       const conf = s.categories[cat];
-      if (!conf?.on || !conf.query.trim()) continue;
       try {
-        const { dockets } = await searchCategory(cat, conf.query, { after });
+        const { dockets } = await searchCategory(cat, conf.query, { after, maxPages: 2 });
         for (const d of dockets) {
           if (added[cat] >= MAX_NEW_PER_CATEGORY) break;
           if ((await storeDocket(cat, d, false)) === "new") added[cat]++;
         }
+        state[cat] = new Date().toISOString();
       } catch (e) {
+        if (e instanceof RateLimited) {
+          limited = true;
+          break;
+        }
+        state[cat] = new Date().toISOString();
         errors.push(`${CATEGORY_LABEL[cat]}: ${(e as Error).message}`);
       }
     }
+    await setSetting("ingest_state", state);
+    const total0 = added.court + added.tax + added.debt;
+    if (limited && total0 === 0 && !errors.length) return "waiting for CourtListener rate limit";
     const total = added.court + added.tax + added.debt;
     const summary =
       `Incoming: ${total} new lead${total === 1 ? "" : "s"}` +
@@ -203,7 +215,34 @@ interface DetailRow {
   founder_full_name: string | null;
   status: string;
   is_historical_backfill: boolean;
-  raw: { docket_id?: number } | null;
+  raw: { docket_id?: number; party?: string[]; suitNature?: string; cause?: string; chapter?: string | number | null; docket_absolute_url?: string } | null;
+  case_name: string;
+  case_number: string | null;
+  court_id: string | null;
+  court_name: string | null;
+  filing_date: string | null;
+  judge: string | null;
+  trustee: string | null;
+  cl_url: string | null;
+}
+
+/** The docket as CourtListener's search returned it, rebuilt from the stored lead — no extra API call. */
+function docketFromRow(r: DetailRow): ClDocket {
+  return {
+    docket_id: Number(r.raw?.docket_id ?? r.external_case_id),
+    caseName: r.case_name,
+    docketNumber: r.case_number ?? undefined,
+    court: r.court_name ?? undefined,
+    court_id: r.court_id ?? undefined,
+    dateFiled: r.filing_date ?? undefined,
+    chapter: r.raw?.chapter ?? null,
+    suitNature: r.raw?.suitNature,
+    cause: r.raw?.cause,
+    party: r.raw?.party ?? [],
+    assignedTo: r.judge ?? undefined,
+    trustee_str: r.trustee ?? undefined,
+    docket_absolute_url: r.raw?.docket_absolute_url,
+  };
 }
 
 /** Reads docket entries and public filing text for new leads, and re-checks recent bankruptcies daily until their schedules appear. */
@@ -215,32 +254,43 @@ export async function refreshDetails(budgetMs = 25_000, onlyId?: string): Promis
   try {
     const rows = await q<DetailRow>(
       onlyId
-        ? `select id, category, external_case_id, company_name, founder_full_name, status, is_historical_backfill, raw from leads where id = $1`
-        : `select id, category, external_case_id, company_name, founder_full_name, status, is_historical_backfill, raw from leads
+        ? `select id, category, external_case_id, company_name, founder_full_name, status, is_historical_backfill, raw, case_name, case_number, court_id, court_name, filing_date::text as filing_date, judge, trustee, cl_url from leads where id = $1`
+        : `select id, category, external_case_id, company_name, founder_full_name, status, is_historical_backfill, raw, case_name, case_number, court_id, court_name, filing_date::text as filing_date, judge, trustee, cl_url from leads
            where details_checked_at is null
-              or (debt_amount is null and filing_date > current_date - 60 and details_checked_at < now() - interval '20 hours')
+              or ((debt_amount is null or founder_full_name is null) and filing_date > current_date - 60 and details_checked_at < now() - interval '20 hours')
            order by (details_checked_at is null) desc, is_historical_backfill asc, created_at desc limit 12`,
       onlyId ? [onlyId] : [],
     );
     for (const r of rows) {
       if (Date.now() - t0 > budgetMs) break;
-      const docketId = Number(r.raw?.docket_id ?? r.external_case_id);
-      const d = await docketById(docketId);
-      if (!d) {
-        await q(`update leads set details_checked_at = now() where id = $1`, [r.id]);
-        continue;
+      const d = docketFromRow(r);
+      let det;
+      try {
+        det = await caseDetails(r.category, d, !r.founder_full_name);
+      } catch (e) {
+        if (e instanceof RateLimited) break; // not marked as checked: picked up again next minute
+        throw e;
       }
-      const det = await caseDetails(r.category, d);
       // A signer named in the documents fills in a missing owner.
       let founder: { full: string; first: string; last: string; title: string | null; source: string } | null = null;
-      if (!r.founder_full_name) {
+      if (!r.founder_full_name && det.signer) {
+        const n = splitFullName(det.signer.name);
+        if (n.last) founder = { full: det.signer.name, first: n.first, last: n.last, title: det.signer.title, source: det.signer.source };
+      }
+      if (!r.founder_full_name && !founder) {
         let x = heuristicExtract(r.category, d, r.company_name, det.entries);
         if (!x.founderFullName) x = await llmRefine(r.category, d, det.entries, x);
         if (x.founderFullName && x.founderFirstName && x.founderLastName)
           founder = { full: x.founderFullName, first: x.founderFirstName, last: x.founderLastName, title: x.founderTitle, source: x.founderSource ?? "court document" };
       }
       const nextStatus =
-        r.status === "pending_details" ? (founder ? (r.is_historical_backfill ? "not_enriched_backfill" : "discovered") : "enrichment_failed") : r.status;
+        founder && (r.status === "pending_details" || r.status === "enrichment_failed")
+          ? r.is_historical_backfill
+            ? "not_enriched_backfill"
+            : "discovered"
+          : r.status === "pending_details"
+            ? "enrichment_failed"
+            : r.status;
       await q(
         `update leads set
            debt_amount = coalesce($2, debt_amount), debt_amount_text = coalesce($3, debt_amount_text), tax_debt = coalesce($4, tax_debt),

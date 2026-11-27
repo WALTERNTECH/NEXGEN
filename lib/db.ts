@@ -206,6 +206,9 @@ create index if not exists leads_category_idx on leads (category, created_at des
 -- Update D: a lead can receive the new-lead email once, and an address can receive it once.
 create unique index if not exists email_log_initial_lead_once on email_log (lead_id) where kind = 'initial';
 
+create table if not exists cl_budget (bucket text primary key, minute timestamptz not null, used int not null default 0);
+alter table cl_budget enable row level security;
+
 -- Token the database scheduler (pg_cron) uses to call /api/cron/tick; never leaves the database.
 insert into settings (key, value) values ('cron_token', to_jsonb(md5(random()::text || clock_timestamp()::text) || md5(random()::text || clock_timestamp()::text)))
 on conflict (key) do nothing;

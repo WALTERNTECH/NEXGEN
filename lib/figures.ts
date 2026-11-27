@@ -2,6 +2,7 @@ import "server-only";
 import type { Category } from "./config";
 import { secret } from "./config";
 import { docketEntries, documentText, type ClDocket, type ClEntry } from "./courtlistener";
+import { looksLikePerson } from "./extract";
 
 /**
  * Update C — exact figures. Amounts are only ever taken from text that is actually in the public record
@@ -25,6 +26,7 @@ export interface CaseDetails extends CaseFigures {
   summary: string;
   notes: { date: string | null; no: string | null; text: string }[];
   entries: ClEntry[];
+  signer: { name: string; title: string | null; source: string } | null;
 }
 
 const AMT = String.raw`\$\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2})?|[0-9]+(?:\.[0-9]{2})?)`;
@@ -92,6 +94,27 @@ export function parsePetitionRange(text: string): string | null {
   return marked ? marked[1].replace(/\s+/g, " ") : null;
 }
 
+/**
+ * Who signed for the company: Official Form 201 (voluntary petition, "Signature of authorized representative")
+ * and Form 202 (declaration for non-individual debtors) print the signer's name and title.
+ */
+export function parseSigner(text: string): { name: string; title: string | null } | null {
+  const t = text.replace(/\s+/g, " ");
+  const stop = String.raw`(?=\s+(?:Signature|Date|Title|X\s|Executed|18\.|19\.|Position|Part\s|Official Form)|\s*$)`;
+  const pats = [
+    new RegExp(String.raw`authorized representative of (?:the )?debtor[\s\S]{0,700}?Printed name:?\s+([A-Z][A-Za-z.'’\- ]{3,50}?)\s+Title:?\s+([A-Za-z ,&\/\-]{2,50}?)` + stop, "i"),
+    new RegExp(String.raw`Printed name:?\s+([A-Z][A-Za-z.'’\- ]{3,50}?)\s+Position or relationship to debtor:?\s+([A-Za-z ,&\/\-]{2,50}?)` + stop, "i"),
+    new RegExp(String.raw`\/s\/\s*([A-Z][A-Za-z.'’\-]+(?:\s+[A-Z][A-Za-z.'’\-]+){1,3}),?\s+(President|CEO|Chief Executive Officer|Managing Member|Sole Member|Member|Manager|Owner|Director|Chief Restructuring Officer)`, "i"),
+  ];
+  for (const re of pats) {
+    const m = re.exec(t);
+    if (!m) continue;
+    const name = m[1].trim().replace(/\s+/g, " ");
+    if (looksLikePerson(name)) return { name, title: m[2]?.trim() || null };
+  }
+  return null;
+}
+
 /** Complaints in tax and debt suits state the amount sued for. */
 export function parseComplaint(text: string, category: Category): Partial<CaseFigures> {
   const t = text.replace(/\s+/g, " ");
@@ -139,8 +162,10 @@ function dbaOf(d: ClDocket) {
 const SCHEDULE_DOC = /summary of (?:your )?assets and liabilities|schedules? (?:a\/b|d|e\/f|of assets)|schedules|206sum|106sum/i;
 const PETITION_DOC = /voluntary petition|chapter 11 petition|petition for relief/i;
 const COMPLAINT_DOC = /complaint/i;
+const SIGNER_DOC = /declaration|resolution|corporate ownership|statement of financial affairs|list of (?:creditors|equity)|202/i;
 
-export async function caseDetails(category: Category, d: ClDocket): Promise<CaseDetails> {
+export async function caseDetails(category: Category, d: ClDocket, needSigner = false): Promise<CaseDetails> {
+  let signer: CaseDetails["signer"] = null;
   const entries = await docketEntries(d.docket_id);
   const f: CaseFigures = { total: null, tax: null, secured: null, unsecured: null, priority: null, range: null, source: null };
   const avail = entries.filter((e) => e.is_available && e.id);
@@ -164,14 +189,35 @@ export async function caseDetails(category: Category, d: ClDocket): Promise<Case
       f.priority ??= p.priority ?? null;
       f.tax ??= p.tax ?? null;
     }
-    if (!f.total) {
+    // The petition gives the signer (owner/officer) and, until schedules exist, the liabilities range.
+    if (!f.total || needSigner) {
       for (const e of pick(PETITION_DOC).slice(0, 1)) {
         const txt = await documentText(e.id!);
         if (!txt) continue;
         texts.push(txt);
-        f.range = parsePetitionRange(txt);
-        if (f.range) f.source = `Petition, doc ${e.document_number ?? "1"} (range)`;
+        if (!f.total) {
+          f.range = parsePetitionRange(txt);
+          if (f.range) f.source = `Petition, doc ${e.document_number ?? "1"} (range)`;
+        }
+        const sg = parseSigner(txt);
+        if (sg) signer = { ...sg, source: `petition signature, doc ${e.document_number ?? "1"}` };
       }
+    }
+    if (needSigner && !signer) {
+      for (const e of pick(SIGNER_DOC).slice(0, 2)) {
+        const txt = await documentText(e.id!);
+        if (!txt) continue;
+        const sg = parseSigner(txt);
+        if (sg) {
+          signer = { ...sg, source: `signed filing, doc ${e.document_number ?? ""}`.trim() };
+          break;
+        }
+      }
+    }
+    for (const t of texts) {
+      if (signer) break;
+      const sg = parseSigner(t);
+      if (sg) signer = { ...sg, source: "schedules signature" };
     }
   } else {
     for (const e of pick(COMPLAINT_DOC).slice(0, 2)) {
@@ -205,6 +251,7 @@ export async function caseDetails(category: Category, d: ClDocket): Promise<Case
     summary: buildSummary(category, d, f, entries),
     notes,
     entries,
+    signer,
   };
 }
 
