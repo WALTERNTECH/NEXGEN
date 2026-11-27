@@ -656,10 +656,10 @@ export async function findOwners(onlyId?: string, budgetMs = 20_000): Promise<st
     note.push(domain ? `website ${domain}` : "no website");
     if (domain && !r.company_domain) await q(`update leads set company_domain = $2 where id = $1`, [r.id, domain]);
 
-    // Hunter.io first while its free monthly searches last.
-    if (hunterKey) {
+    // Hunter.io first while its free monthly searches last — only on a website NEXGEN verified as this company.
+    if (hunterKey && domain) {
       try {
-        const f = name ? await hunterEmailFinder(name.first, name.last, domain, company) : await hunterDomainSearch(domain, company);
+        const f = name ? await hunterEmailFinder(name.first, name.last, domain) : await hunterDomainSearch(domain);
         if (f && (await setFoundEmail(r.id, f))) {
           done.emails++;
           note.push(`email via ${f.source}`);
@@ -685,7 +685,7 @@ export async function findOwners(onlyId?: string, budgetMs = 20_000): Promise<st
         await q(`update leads set status = 'discovered', bc_job_id = null, owner_lookup_at = now(), owner_lookup_note = $2, updated_at = now() where id = $1`, [r.id, note.join(" · ")]);
         continue;
       }
-      if (domain) {
+      if (domain && !(await getSetting("lf_unavailable"))) {
         try {
           const id = await leadFinder(domain, webhookUrl(), s.find_phones);
           done.lf++;
@@ -697,8 +697,13 @@ export async function findOwners(onlyId?: string, budgetMs = 20_000): Promise<st
           );
           continue;
         } catch (e) {
-          if (/402|credit/i.test((e as Error).message)) await pauseBc("no credits left");
-          else await logRun("enrich", false, `Lead Finder for ${company}: ${(e as Error).message}`);
+          const m = (e as Error).message;
+          if (/out of free lead finder|upgrade your plan/i.test(m)) {
+            // The free plan's Lead Finder searches are used up; name searches still work.
+            await setSetting("lf_unavailable", { at: new Date().toISOString(), reason: "BetterContact free plan: Lead Finder searches used up" });
+            await logRun("enrich", false, "BetterContact Lead Finder (search by website) is used up on the free plan — name searches continue");
+          } else if (/402|credit/i.test(m)) await pauseBc("no credits left");
+          else await logRun("enrich", false, `Lead Finder for ${company}: ${m}`);
         }
       }
     } else if (paused && (name || domain)) {

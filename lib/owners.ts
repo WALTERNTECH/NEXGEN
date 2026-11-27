@@ -1,7 +1,7 @@
 import "server-only";
 import { secret } from "./config";
 import { looksLikePerson, splitFullName } from "./extract";
-import { serperOwner, serperWebsite } from "./sources";
+import { serperOwner, serperWebsites } from "./sources";
 
 /**
  * Owner finder: court filings for brand-new cases rarely name the owner, and BetterContact needs a person.
@@ -243,22 +243,43 @@ export async function findWebsite(company: string, courtId: string | null = null
     words.slice(0, 2).join(""),
     words.join("-"),
   ]);
-  for (const c of [...cands].filter((x) => x.length >= 5).slice(0, 4)) {
-    const domain = `${c}.com`;
+  /** Accept a site only if its page is clearly this company: same name + same state, or the exact name as title and no other state. */
+  const verify = async (host: string): Promise<string | null> => {
+    if (!acceptableHost(host)) return null;
     try {
-      const r = await fetch(`https://${domain}`, { redirect: "follow", signal: AbortSignal.timeout(10_000), headers: { "User-Agent": "Mozilla/5.0 (compatible; nexgen-site-check)" } });
-      if (!r.ok || !/html/i.test(r.headers.get("content-type") ?? "")) continue;
+      const r = await fetch(`https://${host}`, { redirect: "follow", signal: AbortSignal.timeout(10_000), headers: { "User-Agent": "Mozilla/5.0 (compatible; nexgen-site-check)" } });
+      if (!r.ok || !/html/i.test(r.headers.get("content-type") ?? "")) return null;
+      const finalHost = new URL(r.url).hostname.replace(/^www\./, "");
+      if (!acceptableHost(finalHost)) return null;
       const raw = (await r.text()).slice(0, 1_500_000).toLowerCase();
-      if (PARKED.test(raw)) continue;
+      if (PARKED.test(raw)) return null;
       const title = norm(/<title[^>]*>([^<]*)/.exec(raw)?.[1] ?? "");
       const html = raw.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/g, " ");
       const hits = distinctive.filter((w) => html.includes(w)).length;
-      const host = new URL(r.url).hostname.replace(/^www\./, "");
-      // Same name + same state on the page, or the exact company name as the page title with no other state mentioned.
-      if (hits >= Math.min(2, distinctive.length) && mentionsState(html, state)) return host;
+      if (hits >= Math.min(2, distinctive.length) && mentionsState(html, state)) return finalHost;
       const titleName = norm(title.split(/\s[|–—-]\s|\s::\s/)[0] ?? "").replace(/\b(home|welcome|official site|inc|llc|corp|ltd)\b/g, "").replace(/\s+/g, " ").trim();
-      if (titleName === norm(base) && words.length >= 2 && !mentionsOtherState(html, state)) return host;
+      if (titleName === norm(base) && words.length >= 2 && !mentionsOtherState(html, state)) return finalHost;
     } catch {}
+    return null;
+  };
+  for (const c of [...cands].filter((x) => x.length >= 5).slice(0, 4)) {
+    const ok = await verify(`${c}.com`);
+    if (ok) return ok;
   }
-  return serperWebsite(company, state ? (STATES[state] ?? null) : null, distinctive);
+  // Google (Serper): candidates go through the same page check.
+  for (const h of await serperWebsites(company, state ? (STATES[state] ?? null) : null, distinctive)) {
+    const ok = await verify(h);
+    if (ok) return ok;
+  }
+  return null;
+}
+
+/** US business sites only: no government, school, military, or foreign country domains. */
+function acceptableHost(host: string) {
+  const h = host.toLowerCase();
+  if (/\.(gov|edu|mil|int)$/.test(h)) return false;
+  const tld = h.split(".").pop() ?? "";
+  if (tld.length === 2 && tld !== "us" && tld !== "co" && tld !== "io") return false; // .nz, .uk, .ca …
+  if (/\.(co|com|org|net)\.[a-z]{2}$/.test(h)) return false; // .co.nz, .com.au …
+  return true;
 }

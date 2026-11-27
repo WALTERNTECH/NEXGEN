@@ -44,22 +44,24 @@ function hunterOk(status: string | undefined, score: number | undefined) {
 }
 
 /** A named person at a company (domain or company name) → verified email. */
-export async function hunterEmailFinder(first: string, last: string, domain: string | null, company: string): Promise<FoundEmail | null> {
+// Hunter is only ever asked about a website NEXGEN verified itself: given just a company name it can pick a different
+// organisation with a similar name (a New Zealand firm, a city government), so the domain is required.
+export async function hunterEmailFinder(first: string, last: string, domain: string): Promise<FoundEmail | null> {
   const d = await hunter<{ email?: string; score?: number; position?: string; domain?: string; verification?: { status?: string } }>("email-finder", {
     first_name: first,
     last_name: last,
-    ...(domain ? { domain } : { company }),
+    domain,
   });
   if (!d?.email || !hunterOk(d.verification?.status, d.score)) return null;
   return { email: d.email.toLowerCase(), first, last, title: d.position ?? null, source: "Hunter.io email finder", domain: d.domain ?? domain };
 }
 
 /** No name yet: the most senior people Hunter knows at the company, keeping an owner/executive with a verified address. */
-export async function hunterDomainSearch(domain: string | null, company: string): Promise<FoundEmail | null> {
+export async function hunterDomainSearch(domain: string): Promise<FoundEmail | null> {
   const d = await hunter<{
     domain?: string;
     emails?: { value: string; first_name?: string; last_name?: string; position?: string; seniority?: string; confidence?: number; verification?: { status?: string } }[];
-  }>("domain-search", { ...(domain ? { domain } : { company }), type: "personal", seniority: "executive", limit: "10" });
+  }>("domain-search", { domain, type: "personal", seniority: "executive", limit: "10" });
   const list = d?.emails ?? [];
   const pick =
     list.find((e) => OWNERISH.test(e.position ?? "") && e.first_name && e.last_name && hunterOk(e.verification?.status, e.confidence)) ??
@@ -105,19 +107,20 @@ function hostOf(link: string) {
   }
 }
 
-/** Google's knowledge panel, or the first non-directory result whose title carries the company's distinctive words. */
-export async function serperWebsite(company: string, place: string | null, distinctive: string[]): Promise<string | null> {
+/** Candidate websites from Google: the knowledge panel first, then non-directory results carrying the company's words. Verified by the caller. */
+export async function serperWebsites(company: string, place: string | null, distinctive: string[]): Promise<string[]> {
   const r = await serper(`"${company}"${place ? ` ${place}` : ""}`);
-  if (!r) return null;
+  if (!r) return [];
+  const out: string[] = [];
   const kg = r.knowledgeGraph?.website ? hostOf(r.knowledgeGraph.website) : null;
-  if (kg && !NOT_COMPANY_SITE.test(kg)) return kg;
+  if (kg && !NOT_COMPANY_SITE.test(kg)) out.push(kg);
   for (const o of r.organic ?? []) {
     const h = hostOf(o.link);
-    if (!h || NOT_COMPANY_SITE.test(h)) continue;
+    if (!h || NOT_COMPANY_SITE.test(h) || out.includes(h)) continue;
     const t = `${o.title} ${h}`.toLowerCase();
-    if (distinctive.length && distinctive.every((w) => t.includes(w))) return h;
+    if (distinctive.length && distinctive.every((w) => t.includes(w))) out.push(h);
   }
-  return null;
+  return out.slice(0, 3);
 }
 
 /** "Jane Doe, Owner of Acme Plumbing" style mentions in Google results. */
