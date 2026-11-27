@@ -280,7 +280,7 @@ export async function findWebsite(company: string, courtId: string | null = null
 /** US business sites only: no government, school, military, or foreign country domains. */
 /** Sites that write ABOUT companies (bankruptcy trackers, court records, legal news, directories) — never the company itself. */
 const ABOUT_SITES =
-  /(bkalerts|bankruptcy|inforuptcy|pacermonitor|courtlistener|casetext|unicourt|trellis|docketbird|justia|law360|law\.com|reorg|debtwire|petition|chapter11|ch11|stretto|kccllc|epiq|omniagent|primeclerk|kroll|donlinrecano|bmcgroup|creditor|bizjournals|newsbreak|patch\.com|bizapedia|opencorporates|corporationwiki|buzzfile|dnb|zoominfo|manta|yelp|bbb|yellowpages|mapquest|linkedin|facebook|instagram|twitter|youtube|indeed|glassdoor|crunchbase|bloomberg|reuters|wikipedia)/i;
+  /(bkalerts|bankruptcy|docket|credocket|pacer|courtlink|lawyer|attorney|legal|lexis|westlaw|casemine|bondoro|govinfo|caselaw|findacase|judyrecords|plainsite|bizstanding|opengovus|bisprofiles|companies|business-?search|bizprofile|chamberof|inforuptcy|pacermonitor|courtlistener|casetext|unicourt|trellis|docketbird|justia|law360|law\.com|reorg|debtwire|petition|chapter11|ch11|stretto|kccllc|epiq|omniagent|primeclerk|kroll|donlinrecano|bmcgroup|creditor|bizjournals|newsbreak|patch\.com|bizapedia|opencorporates|corporationwiki|buzzfile|dnb|zoominfo|manta|yelp|bbb|yellowpages|mapquest|linkedin|facebook|instagram|twitter|youtube|indeed|glassdoor|crunchbase|bloomberg|reuters|wikipedia)/i;
 
 function acceptableHost(host: string) {
   const h = host.toLowerCase();
