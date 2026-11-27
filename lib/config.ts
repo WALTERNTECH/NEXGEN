@@ -31,6 +31,12 @@ export interface Settings {
   enrich_backfill: boolean;
   /** Individuals (not companies) in tax/debt suits are kept only when the amount owed is at least this much. */
   individual_min_amount: number;
+  /** Tax arrears: California CDTFA Top 500 delinquent sales & use taxpayers. */
+  source_cdtfa: boolean;
+  /** Bank-loan defaults: SBA 7(a) loans charged off. */
+  source_sba: boolean;
+  /** Only charge-offs from the last N months. */
+  sba_months: number;
   sender_name: string;
   physical_address: string;
   categories: Record<Category, CategoryConf>;
@@ -53,6 +59,9 @@ export const DEFAULT_SETTINGS: Settings = {
   find_phones: false,
   enrich_backfill: true,
   individual_min_amount: 5000,
+  source_cdtfa: true,
+  source_sba: true,
+  sba_months: 12,
   sender_name: "",
   physical_address: "",
   categories: {
@@ -93,6 +102,9 @@ export async function saveSettings(patch: Partial<Settings>) {
   next.lookback_days = clamp(next.lookback_days, 1, 60);
   next.auto_followup_days = clamp(next.auto_followup_days, 0, 60);
   next.individual_min_amount = clamp(next.individual_min_amount, 0, 10_000_000);
+  next.sba_months = clamp(next.sba_months, 1, 72);
+  next.source_cdtfa = Boolean(next.source_cdtfa);
+  next.source_sba = Boolean(next.source_sba);
   next.find_phones = Boolean(next.find_phones);
   next.enrich_backfill = Boolean(next.enrich_backfill);
   await setSetting("app", next);

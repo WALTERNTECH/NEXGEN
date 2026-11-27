@@ -42,6 +42,14 @@ async function view() {
     secrets,
     mailbox: m ? { email: m.email, smtp_host: m.smtp_host, smtp_port: m.smtp_port, imap_host: m.imap_host, imap_port: m.imap_port, fromEnv: Boolean(process.env.MAILBOX_EMAIL) } : null,
     webhook: webhookUrl() ? webhookUrl()!.replace(/token=.*/, "token=•••") : null,
+    imports: await (async () => {
+      const { getSetting } = await import("@/lib/config");
+      const sba = await getSetting<Record<string, unknown>>("sba_import");
+      return {
+        cdtfa: await getSetting("cdtfa_status"),
+        sba: sba ? { url: sba.url, offset: sba.offset, size: sba.size, scanned: sba.scanned, matched: sba.matched, added: sba.added, status: sba.status, finished_at: sba.finished_at ?? null } : null,
+      };
+    })(),
     link: process.env.ACCESS_KEY ? `${appUrl()}/?key=${process.env.ACCESS_KEY}` : null,
   };
 }

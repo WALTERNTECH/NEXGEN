@@ -524,7 +524,7 @@ export function LeadDrawer({ id, onClose }: { id: string; onClose: () => void })
               {l.cl_url && (
                 <a className="btn sm" href={l.cl_url} target="_blank" rel="noreferrer">
                   <IExternal />
-                  Open docket
+                  {l.source === "cdtfa" ? "Open CDTFA list" : l.source === "sba" ? "Open SBA loan data" : "Open docket"}
                 </a>
               )}
               {l.status !== "unsubscribed" && (

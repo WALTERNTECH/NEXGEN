@@ -11,6 +11,9 @@ interface View {
     find_phones: boolean;
     enrich_backfill: boolean;
     individual_min_amount: number;
+    source_cdtfa: boolean;
+    source_sba: boolean;
+    sba_months: number;
     categories: Record<Category, { on: boolean; query: string }>;
   };
   defaults: Record<Category, string>;
@@ -18,6 +21,10 @@ interface View {
   mailbox: { email: string; smtp_host: string; smtp_port: number; imap_host: string; imap_port: number; fromEnv: boolean } | null;
   webhook: string | null;
   link: string | null;
+  imports?: {
+    cdtfa: { rows: number; added: number; at: string } | null;
+    sba: { url: string; offset: number; size: number; scanned: number; matched: number; added: number; status: string; finished_at: string | null } | null;
+  };
 }
 
 const KEYS = [
@@ -375,6 +382,66 @@ export default function SettingsPage() {
             />
           </div>
           {v.webhook && <div className="small">BetterContact results come back to {v.webhook} (and are also polled every few minutes as a backup).</div>}
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-h">
+          <h2>Tax arrears &amp; bank-loan defaults</h2>
+        </div>
+        <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <p className="sub" style={{ margin: 0 }}>
+            Companies in distress that never went to court. Each one is searched for its owner&apos;s email like any other lead, and only shows once an email is found.
+          </p>
+          <div className="row" style={{ justifyContent: "space-between", gap: 12 }}>
+            <div>
+              <b>Tax arrears — California CDTFA Top 500</b>
+              <div className="small">
+                Businesses with the largest unpaid sales &amp; use tax, with the exact balance and lien date. Refreshed daily.
+                {v.imports?.cdtfa ? ` Last import: ${v.imports.cdtfa.rows} businesses listed, ${v.imports.cdtfa.added} new.` : ""}
+              </div>
+            </div>
+            <button
+              className={`switch ${v.settings.source_cdtfa ? "on" : ""}`}
+              aria-label="Tax arrears source"
+              aria-pressed={v.settings.source_cdtfa}
+              onClick={() => run("cdtfa", () => api("/api/settings", { method: "PUT", json: { settings: { source_cdtfa: !v.settings.source_cdtfa } } }), "Saved")}
+            />
+          </div>
+          <div className="row" style={{ justifyContent: "space-between", gap: 12 }}>
+            <div>
+              <b>Bank-loan defaults — SBA 7(a) charge-offs</b>
+              <div className="small">
+                Bank loans the lender wrote off because the business stopped paying (nationwide, with bank and amount). Updated quarterly by the SBA.
+                {v.imports?.sba
+                  ? v.imports.sba.status === "done"
+                    ? ` Last import: ${v.imports.sba.scanned.toLocaleString()} loans read, ${v.imports.sba.matched} recent charge-offs, ${v.imports.sba.added} new.`
+                    : ` Reading the loan file: ${Math.round((v.imports.sba.offset / Math.max(1, v.imports.sba.size)) * 100)}% — ${v.imports.sba.added} companies so far.`
+                  : ""}
+              </div>
+            </div>
+            <button
+              className={`switch ${v.settings.source_sba ? "on" : ""}`}
+              aria-label="Bank-loan defaults source"
+              aria-pressed={v.settings.source_sba}
+              onClick={() => run("sba", () => api("/api/settings", { method: "PUT", json: { settings: { source_sba: !v.settings.source_sba } } }), "Saved")}
+            />
+          </div>
+          <div className="row" style={{ justifyContent: "space-between", gap: 12 }}>
+            <div>
+              <b>Charge-offs from the last (months)</b>
+              <div className="small">Older write-offs are more likely to be closed businesses.</div>
+            </div>
+            <input
+              className="input"
+              type="number"
+              min={1}
+              max={72}
+              style={{ width: 100 }}
+              defaultValue={v.settings.sba_months}
+              onBlur={(e) => run("months", () => api("/api/settings", { method: "PUT", json: { settings: { sba_months: Number(e.target.value) } } }), "Saved")}
+            />
+          </div>
         </div>
       </div>
 

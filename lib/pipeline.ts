@@ -20,6 +20,7 @@ import { money } from "./render";
 import { enrich, result, account, leadIdOf, leadFinder, leadFinderResult, GOOD_EMAIL, type BcResult, type LfResult, type LfLead } from "./bettercontact";
 import { hunterEmailFinder, hunterDomainSearch } from "./sources";
 import { findOwner, findWebsite } from "./owners";
+import { importCdtfa, importSba } from "./importers";
 import { render, sendMail, mailReady, type LeadVars } from "./mailer";
 import { checkInbox } from "./inbox";
 import { notify } from "./push";
@@ -287,7 +288,7 @@ export async function refreshDetails(budgetMs = 25_000, onlyId?: string): Promis
       onlyId
         ? `select id, category, external_case_id, company_name, founder_full_name, status, is_historical_backfill, raw, case_name, case_number, court_id, court_name, filing_date::text as filing_date, judge, trustee, cl_url, is_individual, direct_email, debt_amount, owner_lookup_at from leads where id = $1`
         : `select id, category, external_case_id, company_name, founder_full_name, status, is_historical_backfill, raw, case_name, case_number, court_id, court_name, filing_date::text as filing_date, judge, trustee, cl_url, is_individual, direct_email, debt_amount, owner_lookup_at from leads
-           where (not is_historical_backfill or direct_email is not null or is_individual)
+           where source = 'courtlistener' and (not is_historical_backfill or direct_email is not null or is_individual)
              and (details_checked_at is null
                   or ((debt_amount is null or founder_full_name is null) and filing_date > current_date - 45 and details_checked_at < now() - interval '3 days'))
            order by (direct_email is not null and details_checked_at is null) desc, (is_individual and details_checked_at is null) desc,
@@ -544,6 +545,7 @@ interface ResearchRow {
   founder_first_name: string | null;
   founder_last_name: string | null;
   founder_title: string | null;
+  biz_state: string | null;
 }
 
 /** BetterContact is paused after it reports no credits; re-checked once an hour (free account call). */
@@ -616,12 +618,12 @@ export async function findOwners(onlyId?: string, budgetMs = 20_000): Promise<st
   const s = await getSettings();
   const rows = await q<ResearchRow>(
     `select id, company_name, court_id, status, is_historical_backfill, is_individual, company_domain, dba,
-            founder_full_name, founder_first_name, founder_last_name, founder_title
+            founder_full_name, founder_first_name, founder_last_name, founder_title, biz_state
      from leads ${
        onlyId
          ? "where id = $1"
          : `where status = 'researching' and direct_email is null ${s.enrich_backfill ? "" : "and is_historical_backfill = false"}
-            order by is_historical_backfill asc, created_at desc limit 6`
+            order by is_historical_backfill asc, filing_date desc nulls last, created_at desc limit 6`
      }`,
     onlyId ? [onlyId] : [],
   );
@@ -633,6 +635,8 @@ export async function findOwners(onlyId?: string, budgetMs = 20_000): Promise<st
     const note: string[] = [];
     // An individual is searched through the business they're connected to (d/b/a), when the filing gives one.
     const company = r.is_individual ? r.dba : r.company_name;
+    // Where the business is: its own address (tax/loan records) or the court's state.
+    const where = r.biz_state ? r.biz_state.toLowerCase() : r.court_id;
     if (!company) {
       await q(`update leads set status = 'enrichment_failed', owner_lookup_at = now(), owner_lookup_note = 'individual with no business named in the filing', updated_at = now() where id = $1`, [r.id]);
       done.none++;
@@ -640,7 +644,7 @@ export async function findOwners(onlyId?: string, budgetMs = 20_000): Promise<st
     }
     let name = r.founder_full_name && r.founder_first_name && r.founder_last_name ? { name: r.founder_full_name, first: r.founder_first_name, last: r.founder_last_name, title: r.founder_title ?? "", source: "" } : null;
     if (!name) {
-      const { hit, tried } = await findOwner(company, r.court_id);
+      const { hit, tried } = await findOwner(company, where);
       note.push(`checked ${tried.join(", ") || "filing"}`);
       if (hit) {
         name = hit;
@@ -652,7 +656,7 @@ export async function findOwners(onlyId?: string, budgetMs = 20_000): Promise<st
         );
       }
     }
-    const domain = r.company_domain ?? (await findWebsite(company, r.court_id));
+    const domain = r.company_domain ?? (await findWebsite(company, where));
     note.push(domain ? `website ${domain}` : "no website");
     if (domain && !r.company_domain) await q(`update leads set company_domain = $2 where id = $1`, [r.id, domain]);
 
@@ -963,6 +967,8 @@ export async function tick(opts: { forceIngest?: boolean } = {}) {
   await setSetting("last_tick_at", new Date().toISOString());
   await step("ingest", () => ingest(opts.forceIngest));
   await step("details", () => refreshDetails(Math.max(5_000, 30_000 - (Date.now() - t0))));
+  await step("tax arrears", () => importCdtfa());
+  await step("bank defaults", () => importSba(Math.max(5_000, 25_000 - (Date.now() - t0))));
   await step("research", () => findOwners(undefined, Math.max(5_000, 40_000 - (Date.now() - t0))));
   await step("enrich", () => enrichPending());
   await step("poll", () => pollEnrichment());
