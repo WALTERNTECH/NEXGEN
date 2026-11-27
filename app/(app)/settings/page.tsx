@@ -16,6 +16,8 @@ interface View {
     sba_months: number;
     tax_states: string[];
     tax_min_amount: number;
+    apify_feeds: string[];
+    apify_daily_budget: number;
     categories: Record<Category, { on: boolean; query: string }>;
   };
   defaults: Record<Category, string>;
@@ -28,6 +30,8 @@ interface View {
     sba: { url: string; offset: number; size: number; scanned: number; matched: number; added: number; status: string; finished_at: string | null } | null;
     states?: Record<string, { at: string; rows: number; added: number; error?: string }> | null;
     stateList?: Record<string, { label: string; page: string }>;
+    apify?: Record<string, { lastSuccessAt?: string | null; lastRecords?: number; lastAdded?: number; lastCostUsd?: number | null; error?: string | null; runId?: string | null }> | null;
+    apifyFeeds?: Record<string, { label: string; price: number; page: string }>;
   };
 }
 
@@ -37,6 +41,7 @@ const KEYS = [
   { name: "OPENAI_API_KEY", label: "OpenAI API key (optional)", check: null, help: "Helps pull owner names and debt amounts out of court text" },
   { name: "HUNTER_API_KEY", label: "Hunter.io API key (recommended)", check: null, help: "Finds verified emails from a company name or website. Free: 25 searches/month; Starter $49/month. hunter.io → API" },
   { name: "SERPER_API_KEY", label: "Serper.dev API key (recommended)", check: null, help: "Google search results to find each company's website and owner. 2,500 free searches, then about $50 per 50,000. serper.dev → API key" },
+  { name: "APIFY_API_TOKEN", label: "Apify API token (paid tax-lien feeds)", check: "apify", help: "console.apify.com/settings/integrations → Personal API token" },
   { name: "OPENCORPORATES_API_KEY", label: "OpenCorporates API key (optional, paid)", check: null, help: "Officer names for companies in every state. Without it, NEXGEN uses the free NY, CO, CT and OR registries plus the company website." },
 ] as const;
 
@@ -443,6 +448,51 @@ export default function SettingsPage() {
               Not available automatically: Massachusetts and Rhode Island block automated access, Wisconsin and South Carolina don&apos;t answer scripts, Oregon shows its list
               only in an interactive portal, Connecticut sends it by email on request, Georgia and Louisiana stopped publishing.
             </div>
+          </div>
+          <div className="field" style={{ borderTop: "1px solid var(--line)", paddingTop: 14 }}>
+            <b>Paid feeds — IRS federal tax liens (Apify)</b>
+            <div className="small">
+              {v.secrets.APIFY_API_TOKEN ? "Runs once a day per feed, within your daily budget." : "Add your Apify API token under Connections to switch these on."} Tap a feed to switch it on or off.
+            </div>
+            <div className="chips" style={{ marginTop: 6 }}>
+              {Object.entries(v.imports?.apifyFeeds ?? {}).map(([code, f]) => {
+                const on = v.settings.apify_feeds.includes(code);
+                const st = v.imports?.apify?.[code];
+                return (
+                  <button
+                    key={code}
+                    className={`chip ${on ? "on" : ""}`}
+                    title={`${f.price} per record${st?.lastSuccessAt ? ` · last run: ${st.lastRecords ?? 0} records, ${st.lastAdded ?? 0} new${st.lastCostUsd != null ? `, ${st.lastCostUsd.toFixed(2)}` : ""}` : ""}${st?.error ? ` · error: ${st.error}` : ""}`}
+                    onClick={() =>
+                      run("af-" + code, () =>
+                        api("/api/settings", {
+                          method: "PUT",
+                          json: { settings: { apify_feeds: on ? v.settings.apify_feeds.filter((x) => x !== code) : [...v.settings.apify_feeds, code] } },
+                        }),
+                      )
+                    }
+                  >
+                    {f.label}
+                    {st?.runId ? " · running" : st?.error ? " · error" : st?.lastSuccessAt ? ` · ${st.lastAdded ?? 0} new` : ""}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <div className="row" style={{ justifyContent: "space-between", gap: 12 }}>
+            <div>
+              <b>Apify daily budget (USD)</b>
+              <div className="small">Split across the feeds that are on; each run is capped so it can&apos;t spend more. $1/day ≈ $30/month.</div>
+            </div>
+            <input
+              className="input"
+              type="number"
+              min={0}
+              step={0.5}
+              style={{ width: 120 }}
+              defaultValue={v.settings.apify_daily_budget}
+              onBlur={(e) => run("abud", () => api("/api/settings", { method: "PUT", json: { settings: { apify_daily_budget: Number(e.target.value) } } }), "Saved")}
+            />
           </div>
           <div className="row" style={{ justifyContent: "space-between", gap: 12 }}>
             <div>

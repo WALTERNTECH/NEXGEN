@@ -41,6 +41,10 @@ export interface Settings {
   tax_states: string[];
   /** Only companies owing at least this much on a state tax list. */
   tax_min_amount: number;
+  /** Paid Apify lien feeds to run (see lib/apify.ts). */
+  apify_feeds: string[];
+  /** USD per day across all Apify feeds. */
+  apify_daily_budget: number;
   sender_name: string;
   physical_address: string;
   categories: Record<Category, CategoryConf>;
@@ -68,6 +72,8 @@ export const DEFAULT_SETTINGS: Settings = {
   sba_months: 12,
   tax_states: ["ca_ftb", "fl", "de", "sd", "wy"],
   tax_min_amount: 5000,
+  apify_feeds: ["fl_ftl", "co_irs", "or_irs", "nyc_ftl"],
+  apify_daily_budget: 1,
   sender_name: "",
   physical_address: "",
   categories: {
@@ -110,6 +116,8 @@ export async function saveSettings(patch: Partial<Settings>) {
   next.individual_min_amount = clamp(next.individual_min_amount, 0, 10_000_000);
   next.sba_months = clamp(next.sba_months, 1, 72);
   next.tax_min_amount = clamp(next.tax_min_amount, 0, 100_000_000);
+  next.apify_feeds = Array.isArray(next.apify_feeds) ? next.apify_feeds.map(String) : DEFAULT_SETTINGS.apify_feeds;
+  next.apify_daily_budget = Math.min(100, Math.max(0, Math.round(Number(next.apify_daily_budget) * 100) / 100 || 0));
   next.tax_states = Array.isArray(next.tax_states) ? next.tax_states.map(String) : DEFAULT_SETTINGS.tax_states;
   next.source_cdtfa = Boolean(next.source_cdtfa);
   next.source_sba = Boolean(next.source_sba);
@@ -147,8 +155,8 @@ export function unseal(blob: string) {
   return Buffer.concat([d.update(b.subarray(28)), d.final()]).toString("utf8");
 }
 
-export type SecretName = "COURTLISTENER_API_KEY" | "BETTERCONTACT_API_KEY" | "OPENAI_API_KEY" | "RESEND_API_KEY" | "OPENCORPORATES_API_KEY" | "HUNTER_API_KEY" | "SERPER_API_KEY";
-export const SECRET_NAMES: SecretName[] = ["COURTLISTENER_API_KEY", "BETTERCONTACT_API_KEY", "OPENAI_API_KEY", "RESEND_API_KEY", "OPENCORPORATES_API_KEY", "HUNTER_API_KEY", "SERPER_API_KEY"];
+export type SecretName = "COURTLISTENER_API_KEY" | "BETTERCONTACT_API_KEY" | "OPENAI_API_KEY" | "RESEND_API_KEY" | "OPENCORPORATES_API_KEY" | "HUNTER_API_KEY" | "SERPER_API_KEY" | "APIFY_API_TOKEN";
+export const SECRET_NAMES: SecretName[] = ["COURTLISTENER_API_KEY", "BETTERCONTACT_API_KEY", "OPENAI_API_KEY", "RESEND_API_KEY", "OPENCORPORATES_API_KEY", "HUNTER_API_KEY", "SERPER_API_KEY", "APIFY_API_TOKEN"];
 
 /**
  * API keys never contain spaces. Pasting often brings extras along: "Token abc…", "X-API-Key: abc…",

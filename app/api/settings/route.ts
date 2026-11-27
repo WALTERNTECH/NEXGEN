@@ -49,6 +49,8 @@ async function view() {
         cdtfa: await getSetting("cdtfa_status"),
         states: await getSetting("tax_states_status"),
         stateList: (await import("@/lib/statetax")).TAX_STATES,
+        apify: await getSetting("apify_state"),
+        apifyFeeds: Object.fromEntries(Object.entries((await import("@/lib/apify")).APIFY_FEEDS).map(([k, f]) => [k, { label: f.label, price: f.pricePerRecord, page: f.page }])),
         sba: sba ? { url: sba.url, offset: sba.offset, size: sba.size, scanned: sba.scanned, matched: sba.matched, added: sba.added, status: sba.status, finished_at: sba.finished_at ?? null } : null,
       };
     })(),
@@ -80,6 +82,13 @@ export async function GET(req: Request) {
         message: e instanceof RateLimited ? "CourtListener allows 5 searches a minute and 50 an hour on this account — try again shortly." : (e as Error).message,
         searchesLeft: await searchesLeftThisHour(),
       });
+    }
+  }
+  if (check === "apify") {
+    try {
+      return json({ ok: true, message: await (await import("@/lib/apify")).apifyAccount() });
+    } catch (e) {
+      return json({ ok: false, message: (e as Error).message });
     }
   }
   if (check === "courtlistener") {

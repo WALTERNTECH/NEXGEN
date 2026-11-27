@@ -22,6 +22,7 @@ import { hunterEmailFinder, hunterDomainSearch } from "./sources";
 import { findOwner, findWebsite } from "./owners";
 import { importCdtfa, importSba } from "./importers";
 import { importStateTaxes } from "./statetax";
+import { runApifyFeeds } from "./apify";
 import { render, sendMail, mailReady, type LeadVars } from "./mailer";
 import { checkInbox } from "./inbox";
 import { notify } from "./push";
@@ -970,6 +971,7 @@ export async function tick(opts: { forceIngest?: boolean } = {}) {
   await step("details", () => refreshDetails(Math.max(5_000, 30_000 - (Date.now() - t0))));
   await step("tax arrears", () => importCdtfa());
   await step("state tax lists", () => importStateTaxes());
+  await step("apify liens", () => runApifyFeeds());
   await step("bank defaults", () => importSba(Math.max(5_000, 25_000 - (Date.now() - t0))));
   await step("research", () => findOwners(undefined, Math.max(5_000, 40_000 - (Date.now() - t0))));
   await step("enrich", () => enrichPending());
