@@ -12,8 +12,11 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 export async function GET() {
+  const st = await getSettings();
+  // A complete lead: a company (or an individual owing at least the minimum) with a verified email.
+  const COMPLETE = `direct_email is not null and (not is_individual or coalesce(debt_amount, 0) >= ${Number(st.individual_min_amount) || 5000})`;
   const [leads, stats, perDay, sentPerDay, s, lastTick, lastIngest, subs, queue, unread] = await Promise.all([
-    q(`select ${LEAD_COLS} from leads order by is_historical_backfill asc, created_at desc limit 1500`),
+    q(`select ${LEAD_COLS} from leads where ${COMPLETE} order by is_historical_backfill asc, created_at desc limit 1500`),
     one(`select count(*) as total,
            count(*) filter (where created_at > now() - interval '7 days' and not is_historical_backfill) as total_7d,
            count(*) filter (where is_historical_backfill) as backfill,
@@ -24,11 +27,11 @@ export async function GET() {
            count(*) filter (where category = 'court') as court,
            count(*) filter (where category = 'tax') as tax,
            count(*) filter (where category = 'debt') as debt
-         from leads`),
+         from leads where ${COMPLETE}`),
     q(`select to_char(d, 'YYYY-MM-DD') as day,
-           (select count(*) from leads where created_at::date = d and category = 'court' and not is_historical_backfill) as court,
-           (select count(*) from leads where created_at::date = d and category = 'tax' and not is_historical_backfill) as tax,
-           (select count(*) from leads where created_at::date = d and category = 'debt' and not is_historical_backfill) as debt
+           (select count(*) from leads where created_at::date = d and category = 'court' and not is_historical_backfill and ${COMPLETE}) as court,
+           (select count(*) from leads where created_at::date = d and category = 'tax' and not is_historical_backfill and ${COMPLETE}) as tax,
+           (select count(*) from leads where created_at::date = d and category = 'debt' and not is_historical_backfill and ${COMPLETE}) as debt
          from generate_series(current_date - 29, current_date, interval '1 day') as g(d) order by d`),
     q(`select to_char(d, 'YYYY-MM-DD') as day, (select count(*) from email_log where status = 'sent' and sent_at::date = d) as sent
          from generate_series(current_date - 29, current_date, interval '1 day') as g(d) order by d`),
@@ -62,6 +65,19 @@ export async function GET() {
     sentPerDay,
     templatesSaved: Object.fromEntries(await Promise.all(CATEGORIES.map(async (c) => [c, await templateSaved(c)]))),
     backfill: await getSetting<BackfillJob>("backfill"),
+    pipeline: await one(
+      `select count(*) filter (where status in ('researching','discovered','enriching','pending_details') and direct_email is null) as researching,
+              count(*) filter (where status = 'enrichment_failed' and direct_email is null) as no_contact,
+              count(*) filter (where status = 'below_minimum') as below_minimum,
+              count(*) filter (where status = 'not_enriched_backfill') as backfill_waiting,
+              count(*) as scanned
+       from leads`,
+    ),
+    credits: {
+      betterContact: await getSetting<{ left: number; at: string }>("bc_credits"),
+      betterContactPaused: await getSetting<{ at: string; reason: string }>("bc_paused"),
+      hunterPausedUntil: await getSetting<string>("hunter_paused_until"),
+    },
     courtlistener: { pausedUntil: await searchPausedUntil().catch(() => null), searchesLeft: await searchesLeftThisHour().catch(() => null) },
     settings: { auto_send: s.auto_send, send_gap_min: s.send_gap_min, daily_limit: s.daily_limit, ingest_every_min: s.ingest_every_min, categories: s.categories },
     lastTick,

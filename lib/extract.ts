@@ -86,6 +86,39 @@ function sides(caseName: string): { plaintiff: string; defendants: string[]; etA
   return { plaintiff: clean(m[0]), defendants: splitSide(def), etAl: /\bet al\b/i.test(def) };
 }
 
+/**
+ * A person (not a company) in distress: sued by the United States for taxes, sued by a lender/funder for a debt,
+ * or filing Chapter 11 personally. Handles "Bradshaw, Bruce" style captions. Surname-only captions are skipped.
+ */
+export function individualFor(category: Category, d: { caseName: string; chapter?: string | number | null }): { name: string; first: string; last: string } | null {
+  const asPerson = (raw: string) => {
+    const n = titleCase(clean(raw).replace(/,?\s*(et al\.?)$/i, ""));
+    if (!looksLikePerson(n)) return null;
+    const { first, last } = splitName(n);
+    return first && last ? { name: n, first, last } : null;
+  };
+  if (category === "court") {
+    const n = stripInRe(d.caseName);
+    return String(d.chapter ?? "11") === "11" && !isBusiness(n) ? asPerson(n) : null;
+  }
+  const s = sides(d.caseName);
+  if (!s || s.defendants.some(isBusiness)) return null;
+  const okPlaintiff =
+    category === "tax" ? US_PLAINTIFF.test(s.plaintiff) : LENDER.test(s.plaintiff) && !US_PLAINTIFF.test(s.plaintiff) && !looksLikePerson(s.plaintiff);
+  if (!okPlaintiff) return null;
+  const defs = s.defendants;
+  // "Bradshaw, Bruce" → "Bruce Bradshaw"
+  if (defs.length >= 2 && !/\s/.test(defs[0]) && /^[A-Za-z'’-]+(\s+[A-Z]\.?)?$/.test(defs[1])) {
+    const p = asPerson(`${defs[1]} ${defs[0]}`);
+    if (p) return p;
+  }
+  for (const x of defs) {
+    const p = asPerson(x);
+    if (p) return p;
+  }
+  return null;
+}
+
 /** Parties named on the defending side of "X v. Y". */
 function defendants(caseName: string): string[] {
   return sides(caseName)?.defendants ?? [];

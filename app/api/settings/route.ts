@@ -21,6 +21,7 @@ import {
   type Mailbox,
 } from "@/lib/config";
 import { verifyMailbox } from "@/lib/mailer";
+import { q } from "@/lib/db";
 import { ping, searchCategory, searchesLeftThisHour, ymd, RateLimited } from "@/lib/courtlistener";
 import { companyFor, heuristicExtract } from "@/lib/extract";
 import { account } from "@/lib/bettercontact";
@@ -138,6 +139,14 @@ export async function PUT(req: Request) {
           return bad(`That doesn't look like an API key (it's ${c.length} characters and looks like ${/process\.env|fetch\(/i.test(c) ? "example code" : "other text"}). Copy only the key itself and paste it here.`);
       }
       await saveSecret(k as SecretName, v ? String(v) : null);
+      // A new email/website source: give every company that ended without an email another search.
+      if (v && ["HUNTER_API_KEY", "SERPER_API_KEY", "OPENCORPORATES_API_KEY"].includes(k)) {
+        const r = await q(
+          `update leads set status = 'researching', owner_lookup_at = null, updated_at = now()
+           where status = 'enrichment_failed' and direct_email is null and not is_individual returning id`,
+        );
+        await logRun("enrich", true, `${k.replace("_API_KEY", "")} key added — ${r.length} leads queued for another email search`);
+      }
     }
   }
   if (b.mailbox) {

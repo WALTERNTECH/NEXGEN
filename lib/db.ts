@@ -203,6 +203,8 @@ alter table leads add column if not exists case_summary text;
 alter table leads add column if not exists case_notes jsonb;
 alter table leads add column if not exists details_checked_at timestamptz;
 alter table leads add column if not exists owner_lookup_at timestamptz;
+alter table leads add column if not exists is_individual boolean not null default false;
+alter table leads add column if not exists contact_source text;
 alter table leads add column if not exists owner_lookup_note text;
 create index if not exists leads_category_idx on leads (category, created_at desc);
 -- Update D: a lead can receive the new-lead email once, and an address can receive it once.

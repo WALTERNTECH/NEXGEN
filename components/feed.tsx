@@ -25,6 +25,8 @@ export interface Feed {
   };
   templatesSaved: Record<Category, boolean>;
   courtlistener?: { pausedUntil: string | null; searchesLeft: number | null };
+  pipeline?: { researching: number; no_contact: number; below_minimum: number; backfill_waiting: number; scanned: number };
+  credits?: { betterContact: { left: number; at: string } | null; betterContactPaused: { at: string; reason: string } | null; hunterPausedUntil: string | null };
   backfill: {
     from: string;
     to: string;

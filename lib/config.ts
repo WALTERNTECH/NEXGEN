@@ -27,6 +27,10 @@ export interface Settings {
   auto_followup_days: number;
   /** BetterContact charges up to 10 credits per mobile number vs ~1 per email: off by default. */
   find_phones: boolean;
+  /** Research backfill leads automatically too (emails only), until BetterContact credits run out. */
+  enrich_backfill: boolean;
+  /** Individuals (not companies) in tax/debt suits are kept only when the amount owed is at least this much. */
+  individual_min_amount: number;
   sender_name: string;
   physical_address: string;
   categories: Record<Category, CategoryConf>;
@@ -47,6 +51,8 @@ export const DEFAULT_SETTINGS: Settings = {
   lookback_days: 2,
   auto_followup_days: 0,
   find_phones: false,
+  enrich_backfill: true,
+  individual_min_amount: 5000,
   sender_name: "",
   physical_address: "",
   categories: {
@@ -86,6 +92,9 @@ export async function saveSettings(patch: Partial<Settings>) {
   next.ingest_every_min = clamp(next.ingest_every_min, 1, 1440);
   next.lookback_days = clamp(next.lookback_days, 1, 60);
   next.auto_followup_days = clamp(next.auto_followup_days, 0, 60);
+  next.individual_min_amount = clamp(next.individual_min_amount, 0, 10_000_000);
+  next.find_phones = Boolean(next.find_phones);
+  next.enrich_backfill = Boolean(next.enrich_backfill);
   await setSetting("app", next);
   return next;
 }
@@ -118,8 +127,8 @@ export function unseal(blob: string) {
   return Buffer.concat([d.update(b.subarray(28)), d.final()]).toString("utf8");
 }
 
-export type SecretName = "COURTLISTENER_API_KEY" | "BETTERCONTACT_API_KEY" | "OPENAI_API_KEY" | "RESEND_API_KEY" | "OPENCORPORATES_API_KEY";
-export const SECRET_NAMES: SecretName[] = ["COURTLISTENER_API_KEY", "BETTERCONTACT_API_KEY", "OPENAI_API_KEY", "RESEND_API_KEY", "OPENCORPORATES_API_KEY"];
+export type SecretName = "COURTLISTENER_API_KEY" | "BETTERCONTACT_API_KEY" | "OPENAI_API_KEY" | "RESEND_API_KEY" | "OPENCORPORATES_API_KEY" | "HUNTER_API_KEY" | "SERPER_API_KEY";
+export const SECRET_NAMES: SecretName[] = ["COURTLISTENER_API_KEY", "BETTERCONTACT_API_KEY", "OPENAI_API_KEY", "RESEND_API_KEY", "OPENCORPORATES_API_KEY", "HUNTER_API_KEY", "SERPER_API_KEY"];
 
 /**
  * API keys never contain spaces. Pasting often brings extras along: "Token abc…", "X-API-Key: abc…",

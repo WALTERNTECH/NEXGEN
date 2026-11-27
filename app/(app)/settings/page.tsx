@@ -9,6 +9,8 @@ interface View {
     ingest_every_min: number;
     lookback_days: number;
     find_phones: boolean;
+    enrich_backfill: boolean;
+    individual_min_amount: number;
     categories: Record<Category, { on: boolean; query: string }>;
   };
   defaults: Record<Category, string>;
@@ -22,6 +24,8 @@ const KEYS = [
   { name: "COURTLISTENER_API_KEY", label: "CourtListener API token", check: "courtlistener", help: "courtlistener.com → Profile → Developer tools → API token" },
   { name: "BETTERCONTACT_API_KEY", label: "BetterContact API key", check: "bettercontact", help: "app.bettercontact.rocks → API" },
   { name: "OPENAI_API_KEY", label: "OpenAI API key (optional)", check: null, help: "Helps pull owner names and debt amounts out of court text" },
+  { name: "HUNTER_API_KEY", label: "Hunter.io API key (recommended)", check: null, help: "Finds verified emails from a company name or website. Free: 25 searches/month; Starter $49/month. hunter.io → API" },
+  { name: "SERPER_API_KEY", label: "Serper.dev API key (recommended)", check: null, help: "Google search results to find each company's website and owner. 2,500 free searches, then about $50 per 50,000. serper.dev → API key" },
   { name: "OPENCORPORATES_API_KEY", label: "OpenCorporates API key (optional, paid)", check: null, help: "Officer names for companies in every state. Without it, NEXGEN uses the free NY, CO, CT and OR registries plus the company website." },
 ] as const;
 
@@ -341,6 +345,33 @@ export default function SettingsPage() {
               onClick={() =>
                 run("phones", () => api("/api/settings", { method: "PUT", json: { settings: { find_phones: !v.settings.find_phones } } }), !v.settings.find_phones ? "Mobile numbers on — up to 10 credits each" : "Emails only")
               }
+            />
+          </div>
+          <div className="row" style={{ justifyContent: "space-between", gap: 12, borderTop: "1px solid var(--line)", paddingTop: 14 }}>
+            <div>
+              <b>Research backfill leads too</b>
+              <div className="small">On = older filings from a backfill are searched for emails as well, until credits run out. Off = only new filings.</div>
+            </div>
+            <button
+              className={`switch ${v.settings.enrich_backfill ? "on" : ""}`}
+              aria-label="Research backfill leads"
+              aria-pressed={v.settings.enrich_backfill}
+              onClick={() => run("bf", () => api("/api/settings", { method: "PUT", json: { settings: { enrich_backfill: !v.settings.enrich_backfill } } }), "Saved")}
+            />
+          </div>
+          <div className="row" style={{ justifyContent: "space-between", gap: 12 }}>
+            <div>
+              <b>Individuals: minimum amount owed</b>
+              <div className="small">People (not companies) in tax or debt suits are shown only when the amount on file is at least this much.</div>
+            </div>
+            <input
+              className="input"
+              type="number"
+              min={0}
+              step={1000}
+              style={{ width: 140 }}
+              defaultValue={v.settings.individual_min_amount}
+              onBlur={(e) => run("min", () => api("/api/settings", { method: "PUT", json: { settings: { individual_min_amount: Number(e.target.value) } } }), "Saved")}
             />
           </div>
           {v.webhook && <div className="small">BetterContact results come back to {v.webhook} (and are also polled every few minutes as a backup).</div>}

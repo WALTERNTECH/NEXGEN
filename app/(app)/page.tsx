@@ -59,6 +59,17 @@ export default function Overview() {
         </div>
       )}
 
+      {feed.pipeline && (
+        <div className="notice info">
+          Showing only complete leads — a company and a verified email{feed.settings ? "" : ""}. Behind the scenes: {feed.pipeline.scanned} filings scanned,{" "}
+          {feed.pipeline.researching} being researched, {feed.pipeline.no_contact} with no findable email yet
+          {feed.pipeline.below_minimum ? `, ${feed.pipeline.below_minimum} individuals under the minimum amount` : ""}.
+          {feed.credits?.betterContact ? ` BetterContact credits left: ${Math.floor(feed.credits.betterContact.left)}.` : ""}
+          {feed.credits?.betterContactPaused ? " BetterContact is paused until credits are added." : ""}
+          {feed.credits?.hunterPausedUntil && Date.parse(feed.credits.hunterPausedUntil) > Date.now() ? " Hunter.io free searches are used up for this month." : ""}
+        </div>
+      )}
+
       {setupMissing.length > 0 && (
         <div className="notice">
           Still to connect: {setupMissing.join(", ")}. <Link href="/settings" style={{ textDecoration: "underline" }}>Open Settings</Link>
@@ -66,7 +77,7 @@ export default function Overview() {
       )}
 
       <div className="kpis">
-        <Kpi label="Distressed companies" value={s.total.toLocaleString()} delta={s.total_7d ? `+${s.total_7d} this week` : null} foot={`${s.unseen} not opened yet${s.backfill ? ` · ${s.backfill} backfill` : ""}`} />
+        <Kpi label="Complete leads (with email)" value={s.total.toLocaleString()} delta={s.total_7d ? `+${s.total_7d} this week` : null} foot={`${s.unseen} not opened yet${s.backfill ? ` · ${s.backfill} backfill` : ""}`} />
         <Kpi label="Direct contacts found" value={s.contacts.toLocaleString()} delta={s.contacts_7d ? `+${s.contacts_7d} this week` : null} foot={s.total ? `${Math.round((s.contacts / s.total) * 100)}% of leads` : undefined} />
         <Kpi label="Emails sent" value={s.sent.toLocaleString()} foot={`${s.sent_24h} in 24 h · ${s.queued} queued${s.failed ? ` · ${s.failed} failed` : ""}`} />
         <Kpi label="Replies" value={s.replied.toLocaleString()} foot={s.unread_replies ? `${s.unread_replies} unread` : "All read"} />

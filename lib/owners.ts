@@ -1,6 +1,7 @@
 import "server-only";
 import { secret } from "./config";
 import { looksLikePerson, splitFullName } from "./extract";
+import { serperOwner, serperWebsite } from "./sources";
 
 /**
  * Owner finder: court filings for brand-new cases rarely name the owner, and BetterContact needs a person.
@@ -177,6 +178,11 @@ export async function findOwner(company: string, courtId: string | null): Promis
     const h = await openCorporates(company, state);
     if (h) return { hit: h, tried };
   }
+  if (await secret("SERPER_API_KEY")) {
+    tried.push("web search");
+    const w = await serperOwner(company, state ? (STATES[state] ?? null) : null);
+    if (w) return { hit: { ...w, source: "web search (Google)" }, tried };
+  }
   return { hit: null, tried };
 }
 
@@ -206,7 +212,7 @@ function mentionsState(html: string, state: string | null) {
 function mentionsOtherState(html: string, state: string | null) {
   for (const [code, name] of Object.entries(STATES)) {
     if (code === state) continue;
-    if (new RegExp(`\b${name}\b`).test(html)) return true;
+    if (new RegExp(`\\b${name}\\b`).test(html)) return true;
   }
   return false;
 }
@@ -250,9 +256,9 @@ export async function findWebsite(company: string, courtId: string | null = null
       const host = new URL(r.url).hostname.replace(/^www\./, "");
       // Same name + same state on the page, or the exact company name as the page title with no other state mentioned.
       if (hits >= Math.min(2, distinctive.length) && mentionsState(html, state)) return host;
-      const titleName = norm(title.split(/s[|–—-]s|s::s/)[0] ?? "").replace(/(home|welcome|official site|inc|llc|corp|ltd)/g, "").replace(/s+/g, " ").trim();
+      const titleName = norm(title.split(/\s[|–—-]\s|\s::\s/)[0] ?? "").replace(/\b(home|welcome|official site|inc|llc|corp|ltd)\b/g, "").replace(/\s+/g, " ").trim();
       if (titleName === norm(base) && words.length >= 2 && !mentionsOtherState(html, state)) return host;
     } catch {}
   }
-  return null;
+  return serperWebsite(company, state ? (STATES[state] ?? null) : null, distinctive);
 }
