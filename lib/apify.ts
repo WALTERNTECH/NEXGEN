@@ -19,26 +19,19 @@ export const APIFY_FEEDS = {
     page: "https://apify.com/jobito/florida-lien-daily-feed",
     input: (max: number) => ({ lookbackDays: 30, onlyNew: true, maxRecords: max }),
   },
-  co_irs: {
-    label: "Colorado — IRS tax liens",
+  ny_llc: {
+    label: "New York State — tax warrants on LLCs",
     actor: "j0401~us-liens",
     pricePerRecord: 0.012,
     page: "https://apify.com/j0401/us-liens",
-    input: (max: number, since: string) => ({ mode: "filings", corpus: "co-filing", filingType: "lien_irs", dateFrom: since, maxResults: max }),
+    input: (max: number, since: string) => ({ mode: "rows", corpus: "ny", debtor: "LLC", dateFrom: since, maxResults: max }),
   },
-  or_irs: {
-    label: "Oregon — IRS tax liens",
+  ny_inc: {
+    label: "New York State — tax warrants on corporations",
     actor: "j0401~us-liens",
     pricePerRecord: 0.012,
     page: "https://apify.com/j0401/us-liens",
-    input: (max: number, since: string) => ({ mode: "filings", corpus: "or", lienType: "IRS", dateFrom: since, maxResults: max }),
-  },
-  nyc_ftl: {
-    label: "New York City — federal tax liens (ACRIS)",
-    actor: "j0401~us-liens",
-    pricePerRecord: 0.012,
-    page: "https://apify.com/j0401/us-liens",
-    input: (max: number, since: string) => ({ mode: "filings", corpus: "nyc-acris", docType: "FTL", dateFrom: since, maxResults: max }),
+    input: (max: number, since: string) => ({ mode: "rows", corpus: "ny", debtor: "INC", dateFrom: since, maxResults: max }),
   },
 } as const;
 export type ApifyFeed = keyof typeof APIFY_FEEDS;
@@ -146,6 +139,19 @@ function isoDay(s: string | undefined | null) {
   return u ? `${u[3]}-${u[1].padStart(2, "0")}-${u[2].padStart(2, "0")}` : null;
 }
 
+/** "JOSE G LEON RAMIREZ INDIVIDUALLY AND AS A RESPONSIBLE PERSON OF TACOS & CHELAS LLC", "LESKI INC. TRADING AS HAT TRIX BAR AND GRILL" */
+export function parseNyDebtor(raw: string): { company: string; dba: string | null; owner: string | null } {
+  let t = raw.replace(/\s+/g, " ").trim();
+  let owner: string | null = null;
+  const rp = /^(.+?)\s+INDIVIDUALLY AND AS (?:A |THE )?(?:RESPONSIBLE PERSON|OFFICER|PRESIDENT|MEMBER|OWNER)S? (?:OF|FOR) (.+)$/i.exec(t);
+  if (rp) {
+    owner = rp[1].trim();
+    t = rp[2].trim();
+  }
+  const ta = /^(.+?)\s+(?:TRADING AS|T\/A|D\/B\/A|DBA)\s+(.+)$/i.exec(t);
+  return ta ? { company: ta[1].trim(), dba: ta[2].trim(), owner } : { company: t, dba: null, owner };
+}
+
 function toRows(feed: ApifyFeed, items: unknown[]): ImportRow[] {
   const f = APIFY_FEEDS[feed];
   const rows: ImportRow[] = [];
@@ -186,6 +192,30 @@ function toRows(feed: ApifyFeed, items: unknown[]): ImportRow[] {
         );
       }
     }
+  } else if (feed === "ny_llc" || feed === "ny_inc") {
+    // One company can have several warrants: add them up.
+    const byCompany = new Map<string, ImportRow>();
+    for (const it of items as UsLien[]) {
+      if (!it.debtorName) continue;
+      const d = parseNyDebtor(it.debtorName);
+      const amount = Number(String(it.amount ?? "").replace(/[$,]/g, "")) || 0;
+      const key = `${d.company.toUpperCase()}|${(it.zip ?? "").slice(0, 5)}`;
+      const cur = byCompany.get(key);
+      if (cur) {
+        cur.amount = Math.round((cur.amount + amount) * 100) / 100;
+        if (!cur.owner && d.owner) cur.owner = { name: d.owner, title: "Responsible person (NY tax warrant)" };
+        continue;
+      }
+      const row = base(d.company, it.filingNumber ?? "", isoDay(it.filingDate), amount, [it.city, it.stateCode, it.zip?.slice(0, 5)].filter(Boolean).join(", ") || null, it.city ?? null, it.stateCode ?? null, it.sourceUrl ?? f.page);
+      row.key = `apify_ny:${key}`;
+      row.dba = d.dba;
+      row.creditor = "New York State Department of Taxation and Finance";
+      row.distress = "New York State tax warrant";
+      row.stage = "State tax warrant docketed";
+      row.owner = d.owner ? { name: d.owner, title: "Responsible person (NY tax warrant)" } : null;
+      byCompany.set(key, row);
+    }
+    rows.push(...byCompany.values());
   } else {
     for (const it of items as UsLien[]) {
       const names = it.debtorNames?.length ? it.debtorNames : it.debtorName ? [it.debtorName] : [];
@@ -205,7 +235,9 @@ function toRows(feed: ApifyFeed, items: unknown[]): ImportRow[] {
 
 export async function runApifyFeeds(): Promise<string> {
   const s = await getSettings();
-  const enabled = APIFY_FEED_CODES.filter((c) => s.apify_feeds.includes(c));
+  const LEGACY: Record<string, string[]> = { co_irs: ["ny_llc"], or_irs: ["ny_inc"], nyc_ftl: [] };
+  const wanted = new Set(s.apify_feeds.flatMap((c) => LEGACY[c] ?? [c]));
+  const enabled = APIFY_FEED_CODES.filter((c) => wanted.has(c));
   if (!enabled.length || !(await secret("APIFY_API_TOKEN"))) return "off";
   if (!(await lease("apify", 120))) return "busy";
   const all = (await getSetting<Partial<Record<ApifyFeed, FeedState>>>("apify_state")) ?? {};

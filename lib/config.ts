@@ -72,7 +72,7 @@ export const DEFAULT_SETTINGS: Settings = {
   sba_months: 12,
   tax_states: ["ca_ftb", "fl", "de", "sd", "wy"],
   tax_min_amount: 5000,
-  apify_feeds: ["fl_ftl", "co_irs", "or_irs", "nyc_ftl"],
+  apify_feeds: ["fl_ftl", "ny_llc", "ny_inc"],
   apify_daily_budget: 1,
   sender_name: "",
   physical_address: "",
