@@ -84,6 +84,17 @@ export async function GET(req: Request) {
       });
     }
   }
+  if (check === "apify_run") {
+    const feed = new URL(req.url).searchParams.get("feed") ?? "";
+    const mod = await import("@/lib/apify");
+    if (!(feed in mod.APIFY_FEEDS)) return bad("Unknown feed");
+    if (new URL(req.url).searchParams.get("rerun") === "1") await mod.rerunApifyFeed(feed as keyof typeof mod.APIFY_FEEDS);
+    try {
+      return json({ ok: true, ...(await mod.apifyLastRun(feed as keyof typeof mod.APIFY_FEEDS)) });
+    } catch (e) {
+      return json({ ok: false, message: (e as Error).message });
+    }
+  }
   if (check === "apify") {
     try {
       return json({ ok: true, message: await (await import("@/lib/apify")).apifyAccount() });

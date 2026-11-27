@@ -17,7 +17,7 @@ export const APIFY_FEEDS = {
     actor: "jobito~florida-lien-daily-feed",
     pricePerRecord: 0.003,
     page: "https://apify.com/jobito/florida-lien-daily-feed",
-    input: (max: number) => ({ lookbackDays: 3, onlyNew: true, filingStatuses: ["A"], maxRecords: max }),
+    input: (max: number) => ({ lookbackDays: 7, onlyNew: true, maxRecords: max }),
   },
   co_irs: {
     label: "Colorado — IRS tax liens",
@@ -46,6 +46,7 @@ export const APIFY_FEED_CODES = Object.keys(APIFY_FEEDS) as ApifyFeed[];
 
 interface FeedState {
   runId?: string | null;
+  lastRunId?: string | null;
   datasetId?: string | null;
   startedAt?: string | null;
   lastSuccessAt?: string | null;
@@ -71,6 +72,24 @@ async function apify<T>(path: string, init?: RequestInit): Promise<T> {
   if (r.status === 402) throw new Error("Apify account is out of credit");
   if (!r.ok) throw new Error(`Apify ${r.status}: ${(await r.text()).slice(0, 160)}`);
   return (await r.json()) as T;
+}
+
+/** The last run's status and the tail of its log, for diagnosing a feed. */
+export async function apifyLastRun(feed: ApifyFeed): Promise<{ status: string; message: string; log: string }> {
+  const st = ((await getSetting<Partial<Record<ApifyFeed, FeedState>>>("apify_state")) ?? {})[feed];
+  const id = st?.runId ?? st?.lastRunId;
+  if (!id) return { status: "none", message: "No run yet", log: "" };
+  const run = await apify<{ data: { status: string; statusMessage?: string } }>(`/actor-runs/${id}`);
+  const token = await secret("APIFY_API_TOKEN");
+  const log = await fetch(`${API}/actor-runs/${id}/log`, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" }).then((r) => (r.ok ? r.text() : ""));
+  return { status: run.data.status, message: run.data.statusMessage ?? "", log: log.split("\n").slice(-40).join("\n") };
+}
+
+/** Clear a feed's daily marker so it runs again on the next tick. */
+export async function rerunApifyFeed(feed: ApifyFeed) {
+  const all = (await getSetting<Partial<Record<ApifyFeed, FeedState>>>("apify_state")) ?? {};
+  all[feed] = { ...all[feed], lastSuccessAt: null, error: null, runId: null };
+  await setSetting("apify_state", all);
 }
 
 export async function apifyAccount(): Promise<string> {
@@ -191,7 +210,7 @@ export async function runApifyFeeds(): Promise<string> {
         const items = await apify<unknown[]>(`/datasets/${run.data.defaultDatasetId}/items?clean=true&format=json&limit=5000`);
         const rows = toRows(running, items);
         const added = await saveRows(rows, s.individual_min_amount);
-        all[running] = { ...st, runId: null, datasetId: null, lastSuccessAt: new Date().toISOString(), lastRecords: items.length, lastAdded: added, lastCostUsd: run.data.usageTotalUsd ?? null, error: null };
+        all[running] = { ...st, runId: null, datasetId: null, lastRunId: st.runId, lastSuccessAt: new Date().toISOString(), lastRecords: items.length, lastAdded: added, lastCostUsd: run.data.usageTotalUsd ?? null, error: null };
         await setSetting("apify_state", all);
         await logRun(
           "ingest",
@@ -201,7 +220,7 @@ export async function runApifyFeeds(): Promise<string> {
         if (added) await notify({ title: `${added} new federal tax liens`, body: `${APIFY_FEEDS[running].label} — searching for owners' emails`, url: "/leads?cat=tax", tag: `apify-${running}` });
         return `${running}: ${items.length} records, ${added} new`;
       }
-      all[running] = { ...st, runId: null, datasetId: null, error: `run ${status.toLowerCase()}` };
+      all[running] = { ...st, runId: null, datasetId: null, lastRunId: st.runId, error: `run ${status.toLowerCase()}` };
       await setSetting("apify_state", all);
       await logRun("ingest", false, `Apify — ${APIFY_FEEDS[running].label}: run ${status.toLowerCase()}`);
       return `${running}: ${status}`;
