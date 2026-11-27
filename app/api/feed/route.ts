@@ -2,6 +2,7 @@ import { after } from "next/server";
 import { q, one } from "@/lib/db";
 import { getSettings, getSetting, secretSource, mailbox, templateSaved, CATEGORIES } from "@/lib/config";
 import type { BackfillJob } from "@/lib/pipeline";
+import { searchPausedUntil, searchesLeftThisHour } from "@/lib/courtlistener";
 import { mailReady } from "@/lib/mailer";
 import { tick } from "@/lib/pipeline";
 import { json } from "../_util";
@@ -61,6 +62,7 @@ export async function GET() {
     sentPerDay,
     templatesSaved: Object.fromEntries(await Promise.all(CATEGORIES.map(async (c) => [c, await templateSaved(c)]))),
     backfill: await getSetting<BackfillJob>("backfill"),
+    courtlistener: { pausedUntil: await searchPausedUntil().catch(() => null), searchesLeft: await searchesLeftThisHour().catch(() => null) },
     settings: { auto_send: s.auto_send, send_gap_min: s.send_gap_min, daily_limit: s.daily_limit, ingest_every_min: s.ingest_every_min, categories: s.categories },
     lastTick,
     lastIngest,

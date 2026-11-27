@@ -24,6 +24,7 @@ export interface Feed {
     backfill: number;
   };
   templatesSaved: Record<Category, boolean>;
+  courtlistener?: { pausedUntil: string | null; searchesLeft: number | null };
   backfill: {
     from: string;
     to: string;

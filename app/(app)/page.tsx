@@ -52,6 +52,13 @@ export default function Overview() {
         </div>
       </div>
 
+      {feed.courtlistener?.pausedUntil && (
+        <div className="notice info">
+          CourtListener allows this account 5 searches a minute and 50 an hour. Searching resumes at{" "}
+          {new Date(feed.courtlistener.pausedUntil).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} — everything else keeps running.
+        </div>
+      )}
+
       {setupMissing.length > 0 && (
         <div className="notice">
           Still to connect: {setupMissing.join(", ")}. <Link href="/settings" style={{ textDecoration: "underline" }}>Open Settings</Link>

@@ -69,7 +69,13 @@ async function take(bucket: Bucket) {
   return (r[0]?.used ?? 0) <= LIMITS[bucket].max;
 }
 
+async function blockedUntil(kind: "search" | "rest") {
+  const r = await q<{ blocked: boolean }>(`select minute > now() as blocked from cl_budget where bucket = $1`, [`block_${kind}`]);
+  return Boolean(r[0]?.blocked);
+}
+
 async function takeBudget(kind: "search" | "rest") {
+  if (await blockedUntil(kind)) throw new RateLimited();
   if (kind === "rest") {
     if (!(await take("rest"))) throw new RateLimited();
     return;
@@ -87,9 +93,20 @@ export async function searchesLeftThisHour() {
   return Math.max(0, LIMITS.search_hour.max - used);
 }
 
-async function exhaust(kind: "search" | "rest", hourly: boolean) {
-  const bucket: Bucket = kind === "rest" ? "rest" : hourly ? "search_hour" : "search";
-  await q(`update cl_budget set used = 999, minute = date_trunc($2, now()) where bucket = $1`, [bucket, LIMITS[bucket].per]).catch(() => {});
+/** CourtListener says when it will accept requests again ("Expected available in 762 seconds"); pause exactly that long. */
+async function exhaust(kind: "search" | "rest", body: string) {
+  const secs = Number(/available in (d+) second/i.exec(body)?.[1] ?? (/hour/i.test(body) ? 900 : 60));
+  await q(
+    `insert into cl_budget (bucket, minute, used) values ($1, now() + make_interval(secs => $2), 0)
+     on conflict (bucket) do update set minute = excluded.minute`,
+    [`block_${kind}`, secs + 2],
+  ).catch(() => {});
+}
+
+/** When searching is paused because of CourtListener's limits, until when. */
+export async function searchPausedUntil(): Promise<string | null> {
+  const r = await q<{ until: string }>(`select minute as until from cl_budget where bucket = 'block_search' and minute > now()`);
+  return r[0]?.until ?? null;
 }
 
 async function clFetch(url: string) {
@@ -104,7 +121,7 @@ async function clFetch(url: string) {
   });
   if (r.status === 429) {
     const body = await r.text();
-    await exhaust(bucket, /hour/i.test(body));
+    await exhaust(bucket, body);
     throw new RateLimited();
   }
   if (!r.ok) throw new Error(`CourtListener ${r.status}: ${(await r.text()).slice(0, 200)}`);
