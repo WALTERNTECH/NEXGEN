@@ -30,7 +30,7 @@ import { logRun } from "@/lib/runs";
 import { json, bad, body } from "../_util";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 async function view() {
   const m = await mailbox();
@@ -82,6 +82,17 @@ export async function GET(req: Request) {
         message: e instanceof RateLimited ? "CourtListener allows 5 searches a minute and 50 an hour on this account — try again shortly." : (e as Error).message,
         searchesLeft: await searchesLeftThisHour(),
       });
+    }
+  }
+  if (check === "apify_probe") {
+    const u = new URL(req.url).searchParams;
+    const actor = u.get("actor") ?? "";
+    if (!/^(jobito~florida-lien-daily-feed|j0401~us-liens)$/.test(actor)) return bad("Unknown actor");
+    try {
+      const input = JSON.parse(u.get("input") ?? "{}");
+      return json({ ok: true, ...(await (await import("@/lib/apify")).apifyProbe(actor, input)) });
+    } catch (e) {
+      return json({ ok: false, message: (e as Error).message });
     }
   }
   if (check === "apify_run") {

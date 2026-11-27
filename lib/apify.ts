@@ -17,7 +17,7 @@ export const APIFY_FEEDS = {
     actor: "jobito~florida-lien-daily-feed",
     pricePerRecord: 0.003,
     page: "https://apify.com/jobito/florida-lien-daily-feed",
-    input: (max: number) => ({ lookbackDays: 7, onlyNew: true, maxRecords: max }),
+    input: (max: number) => ({ lookbackDays: 30, onlyNew: true, maxRecords: max }),
   },
   co_irs: {
     label: "Colorado — IRS tax liens",
@@ -45,6 +45,7 @@ export type ApifyFeed = keyof typeof APIFY_FEEDS;
 export const APIFY_FEED_CODES = Object.keys(APIFY_FEEDS) as ApifyFeed[];
 
 interface FeedState {
+  pendingSince?: string | null;
   runId?: string | null;
   lastRunId?: string | null;
   datasetId?: string | null;
@@ -83,6 +84,19 @@ export async function apifyLastRun(feed: ApifyFeed): Promise<{ status: string; m
   const token = await secret("APIFY_API_TOKEN");
   const log = await fetch(`${API}/actor-runs/${id}/log`, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" }).then((r) => (r.ok ? r.text() : ""));
   return { status: run.data.status, message: run.data.statusMessage ?? "", log: log.split("\n").slice(-40).join("\n") };
+}
+
+/** Diagnostic: run an actor synchronously with a hard cap of 5 records (a few cents) and return what it delivers. */
+export async function apifyProbe(actor: string, input: Record<string, unknown>): Promise<{ items: unknown[]; log: string }> {
+  const token = await secret("APIFY_API_TOKEN");
+  const capped = { ...input, maxResults: 5, maxRecords: 5 };
+  const run = await apify<{ data: { id: string; defaultDatasetId: string } }>(
+    `/acts/${actor}/runs?memory=1024&timeout=240&waitForFinish=240&maxItems=5&maxTotalChargeUsd=0.10`,
+    { method: "POST", body: JSON.stringify(capped) },
+  );
+  const items = await apify<unknown[]>(`/datasets/${run.data.defaultDatasetId}/items?clean=true&format=json&limit=5`);
+  const log = await fetch(`${API}/actor-runs/${run.data.id}/log`, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" }).then((r) => (r.ok ? r.text() : ""));
+  return { items, log: log.split("\n").filter((l) => /INFO|WARN|ERROR/.test(l)).slice(-8).join("\n") };
 }
 
 /** Clear a feed's daily marker so it runs again on the next tick. */
@@ -210,7 +224,7 @@ export async function runApifyFeeds(): Promise<string> {
         const items = await apify<unknown[]>(`/datasets/${run.data.defaultDatasetId}/items?clean=true&format=json&limit=5000`);
         const rows = toRows(running, items);
         const added = await saveRows(rows, s.individual_min_amount);
-        all[running] = { ...st, runId: null, datasetId: null, lastRunId: st.runId, lastSuccessAt: new Date().toISOString(), lastRecords: items.length, lastAdded: added, lastCostUsd: run.data.usageTotalUsd ?? null, error: null };
+        all[running] = { ...st, runId: null, datasetId: null, lastRunId: st.runId, lastSince: st.pendingSince ?? st.lastSince, lastSuccessAt: new Date().toISOString(), lastRecords: items.length, lastAdded: added, lastCostUsd: run.data.usageTotalUsd ?? null, error: null };
         await setSetting("apify_state", all);
         await logRun(
           "ingest",
@@ -233,12 +247,12 @@ export async function runApifyFeeds(): Promise<string> {
     const f = APIFY_FEEDS[due];
     const share = s.apify_daily_budget / enabled.length;
     const max = Math.max(5, Math.floor(share / f.pricePerRecord));
-    const since = all[due]?.lastSince ?? day(new Date(Date.now() - 7 * 86_400_000));
+    const since = all[due]?.lastSince ?? day(new Date(Date.now() - 30 * 86_400_000));
     const run = await apify<{ data: { id: string; defaultDatasetId: string } }>(`/acts/${f.actor}/runs?memory=1024&timeout=1800&maxItems=${max}&maxTotalChargeUsd=${Math.max(0.05, share).toFixed(2)}`, {
       method: "POST",
       body: JSON.stringify(f.input(max, since)),
     });
-    all[due] = { ...all[due], runId: run.data.id, datasetId: run.data.defaultDatasetId, startedAt: new Date().toISOString(), lastSince: day(new Date()), error: null };
+    all[due] = { ...all[due], runId: run.data.id, datasetId: run.data.defaultDatasetId, startedAt: new Date().toISOString(), pendingSince: day(new Date(Date.now() - 2 * 86_400_000)), error: null };
     await setSetting("apify_state", all);
     return `${due}: started (up to ${max} records, about $${(max * f.pricePerRecord).toFixed(2)})`;
   } catch (e) {
