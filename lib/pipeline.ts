@@ -186,7 +186,7 @@ export async function startBackfill(from: string, to: string, categories: Catego
     started_at: new Date().toISOString(),
   };
   await setSetting("backfill", job);
-  await logRun("ingest", true, `Backfill started: ${from} → ${to} (${categories.map((c) => CATEGORY_LABEL[c]).join(", ")}) — no automatic enrichment`);
+  await logRun("ingest", true, `Backfill started: ${from} → ${to} (${categories.map((c) => CATEGORY_LABEL[c]).join(", ")}) — ${(await getSettings()).enrich_backfill ? "researched for emails as they arrive" : "saved without contact searches"}`);
   return job;
 }
 
@@ -215,11 +215,16 @@ export async function processBackfill(budgetMs = 20_000): Promise<string> {
       job.finished_at = new Date().toISOString();
       const n = job.added.court + job.added.tax + job.added.debt;
       await logRun("ingest", true, `Backfill finished: ${n} historical lead${n === 1 ? "" : "s"} saved (not enriched)`, job.added);
-      await notify({ title: "Backfill finished", body: `${n} historical leads saved — enrich any of them from the lead page`, url: "/leads?source=backfill", tag: "backfill" });
+      await notify({ title: "Backfill finished", body: `${n} historical filings scanned — complete leads appear as their emails are found`, url: "/leads?source=backfill", tag: "backfill" });
     }
     await setSetting("backfill", job);
     return `backfill ${job.status} (+${job.added.court + job.added.tax + job.added.debt})`;
   } catch (e) {
+    // CourtListener's per-minute/hour limits only pause the backfill; it continues on the next free minute.
+    if (e instanceof RateLimited || /timeout|aborted/i.test((e as Error).message)) {
+      await setSetting("backfill", job);
+      return `backfill waiting for CourtListener (+${job.added.court + job.added.tax + job.added.debt} so far)`;
+    }
     job.status = "error";
     job.error = (e as Error).message;
     await setSetting("backfill", job);
