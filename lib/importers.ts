@@ -1,6 +1,6 @@
 import "server-only";
 import { getSetting, setSetting, getSettings, type Category } from "./config";
-import { q } from "./db";
+import { q, lease, release } from "./db";
 import { isBusiness, looksLikePerson, splitFullName } from "./extract";
 import { money } from "./render";
 import { logRun } from "./runs";
@@ -111,6 +111,8 @@ export async function importCdtfa(force = false): Promise<string> {
   if (!s.source_cdtfa) return "off";
   const last = await getSetting<string>("cdtfa_imported_at");
   if (!force && last && Date.now() - Date.parse(last) < 24 * 3600_000) return "not due";
+  if (!(await lease("import_cdtfa", 120))) return "already running";
+  try {
   const r = await fetch(CDTFA_URL, { headers: UA, redirect: "follow", signal: AbortSignal.timeout(30_000), cache: "no-store" });
   if (!r.ok) throw new Error(`CDTFA list ${r.status}`);
   const text = await r.text();
@@ -147,6 +149,9 @@ export async function importCdtfa(force = false): Promise<string> {
   await logRun("ingest", true, `Tax arrears (CDTFA Top 500): ${rows.length} businesses on the list, ${added} new — queued for owner & email search`);
   if (added) await notify({ title: `${added} businesses with unpaid tax`, body: "From California's Top 500 list — searching for their owners' emails", url: "/leads?cat=tax", tag: "cdtfa" });
   return `${rows.length} listed, ${added} new`;
+  } finally {
+    await release("import_cdtfa");
+  }
 }
 
 // ---------------- Bank-loan defaults: SBA 7(a) charge-offs ----------------
@@ -202,6 +207,8 @@ const CHUNK = 12 * 1024 * 1024;
 export async function importSba(budgetMs = 30_000): Promise<string> {
   const s = await getSettings();
   if (!s.source_sba) return "off";
+  if (!(await lease("import_sba", 120))) return "already running";
+  try {
   let job = await getSetting<SbaJob>("sba_import");
   if (!job || job.status === "done") {
     const lastCheck = await getSetting<string>("sba_checked_at");
@@ -271,4 +278,7 @@ export async function importSba(budgetMs = 30_000): Promise<string> {
     await setSetting("sba_import", job);
   }
   return job.status === "done" ? `done (${job.added} new)` : `reading ${Math.round((job.offset / Math.max(1, job.size)) * 100)}% (${job.added} new so far)`;
+  } finally {
+    await release("import_sba");
+  }
 }
