@@ -17,10 +17,13 @@ export async function body<T = Record<string, unknown>>(req: Request): Promise<T
   }
 }
 
-export function cronAuthorized(req: Request) {
-  const secret = process.env.CRON_SECRET;
-  if (!secret) return true;
-  const h = req.headers.get("authorization");
+export async function cronAuthorized(req: Request) {
+  const h = req.headers.get("authorization") ?? "";
   const u = new URL(req.url).searchParams.get("secret");
-  return h === `Bearer ${secret}` || u === secret;
+  const given = h.startsWith("Bearer ") ? h.slice(7) : u;
+  if (!given) return !process.env.CRON_SECRET && !process.env.VERCEL;
+  if (process.env.CRON_SECRET && given === process.env.CRON_SECRET) return true;
+  const { getSetting } = await import("@/lib/config");
+  const t = await getSetting<string>("cron_token");
+  return Boolean(t && given === t);
 }

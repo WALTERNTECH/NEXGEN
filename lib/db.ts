@@ -187,6 +187,10 @@ create table if not exists leases (
   until timestamptz not null
 );
 
+-- Token the database scheduler (pg_cron) uses to call /api/cron/tick; never leaves the database.
+insert into settings (key, value) values ('cron_token', to_jsonb(md5(random()::text || clock_timestamp()::text) || md5(random()::text || clock_timestamp()::text)))
+on conflict (key) do nothing;
+
 alter table leads enable row level security;
 alter table email_log enable row level security;
 alter table replies enable row level security;
