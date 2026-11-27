@@ -89,7 +89,7 @@ export async function apifyLastRun(feed: ApifyFeed): Promise<{ status: string; m
 /** Diagnostic: run an actor synchronously with a hard cap of 5 records (a few cents) and return what it delivers. */
 export async function apifyProbe(actor: string, input: Record<string, unknown>): Promise<{ items: unknown[]; log: string }> {
   const token = await secret("APIFY_API_TOKEN");
-  const capped = { ...input, maxResults: 5, maxRecords: 5 };
+  const capped = actor.startsWith("jobito") ? { ...input, maxRecords: 5 } : { ...input, maxResults: 5 };
   const run = await apify<{ data: { id: string; defaultDatasetId: string } }>(
     `/acts/${actor}/runs?memory=1024&timeout=240&waitForFinish=240&maxItems=5&maxTotalChargeUsd=0.10`,
     { method: "POST", body: JSON.stringify(capped) },
