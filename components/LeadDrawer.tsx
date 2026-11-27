@@ -255,10 +255,23 @@ export function LeadDrawer({ id, onClose }: { id: string; onClose: () => void })
                 <span className="small">{l.is_historical_backfill ? "Backfill leads are never enriched automatically — this uses BetterContact credits for this one lead." : "Searches BetterContact for this person's email and mobile."}</span>
               </div>
             )}
-            {!edit && !l.founder_full_name && (
-              <p className="small" style={{ margin: "10px 0 0" }}>
-                The filing doesn't name an owner. Add a name with Edit, then use Enrich now.
-              </p>
+            {!edit && !l.founder_full_name && !l.direct_email && (
+              <div style={{ marginTop: 12 }}>
+                <div className="row">
+                  <button
+                    className="btn"
+                    disabled={busy === "owner" || l.status === "enriching"}
+                    onClick={() => act("owner", () => api(`/api/leads/${id}`, { method: "POST", json: { action: "owner" } }), "Owner search done")}
+                  >
+                    <IUserSearch />
+                    {busy === "owner" ? "Searching registries & website…" : l.status === "enriching" ? "Searching…" : "Find owner"}
+                  </button>
+                  <span className="small">Checks state business registries and the company website, then BetterContact.</span>
+                </div>
+                <p className="small" style={{ margin: "8px 0 0" }}>
+                  {l.owner_lookup_note ? `Last search: ${l.owner_lookup_note}.` : "The filing doesn't name an owner yet."} You can also add a name with Edit, then use Enrich now.
+                </p>
+              </div>
             )}
           </div>
 

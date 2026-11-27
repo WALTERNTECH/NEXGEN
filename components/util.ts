@@ -45,6 +45,8 @@ export interface Lead {
   trustee: string | null;
   dba: string | null;
   details_checked_at: string | null;
+  owner_lookup_note?: string | null;
+  owner_lookup_at?: string | null;
   case_summary?: string | null;
   case_notes?: { date: string | null; no: string | null; text: string }[] | null;
 }

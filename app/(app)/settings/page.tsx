@@ -8,6 +8,7 @@ interface View {
   settings: {
     ingest_every_min: number;
     lookback_days: number;
+    find_phones: boolean;
     categories: Record<Category, { on: boolean; query: string }>;
   };
   defaults: Record<Category, string>;
@@ -21,6 +22,7 @@ const KEYS = [
   { name: "COURTLISTENER_API_KEY", label: "CourtListener API token", check: "courtlistener", help: "courtlistener.com → Profile → Developer tools → API token" },
   { name: "BETTERCONTACT_API_KEY", label: "BetterContact API key", check: "bettercontact", help: "app.bettercontact.rocks → API" },
   { name: "OPENAI_API_KEY", label: "OpenAI API key (optional)", check: null, help: "Helps pull owner names and debt amounts out of court text" },
+  { name: "OPENCORPORATES_API_KEY", label: "OpenCorporates API key (optional, paid)", check: null, help: "Officer names for companies in every state. Without it, NEXGEN uses the free NY, CO, CT and OR registries plus the company website." },
 ] as const;
 
 function urlB64ToUint8(b64: string) {
@@ -325,6 +327,22 @@ export default function SettingsPage() {
               <span className="small">{checks[k.name] ?? k.help}</span>
             </div>
           ))}
+          <div className="row" style={{ justifyContent: "space-between", gap: 12, borderTop: "1px solid var(--line)", paddingTop: 14 }}>
+            <div>
+              <b>Also find mobile numbers</b>
+              <div className="small">
+                Off = emails only (about 1 BetterContact credit per email found). On = also mobile numbers for WhatsApp/calls, up to 10 credits each.
+              </div>
+            </div>
+            <button
+              className={`switch ${v.settings.find_phones ? "on" : ""}`}
+              aria-label="Also find mobile numbers"
+              aria-pressed={v.settings.find_phones}
+              onClick={() =>
+                run("phones", () => api("/api/settings", { method: "PUT", json: { settings: { find_phones: !v.settings.find_phones } } }), !v.settings.find_phones ? "Mobile numbers on — up to 10 credits each" : "Emails only")
+              }
+            />
+          </div>
           {v.webhook && <div className="small">BetterContact results come back to {v.webhook} (and are also polled every few minutes as a backup).</div>}
         </div>
       </div>

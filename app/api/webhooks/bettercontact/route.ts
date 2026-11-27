@@ -1,5 +1,5 @@
-import { applyEnrichment } from "@/lib/pipeline";
-import { result, type BcResult } from "@/lib/bettercontact";
+import { applyEnrichment, applyLeadFinder } from "@/lib/pipeline";
+import { result, leadFinderResult, type BcResult, type LfResult } from "@/lib/bettercontact";
 import { logRun } from "@/lib/runs";
 import { json, bad, body } from "../../_util";
 
@@ -12,6 +12,14 @@ export async function POST(req: Request) {
   const payload = await body<BcResult>(req);
   const id = payload.id ?? payload.request_id;
   if (!id) return bad("missing id");
+  if (Array.isArray((payload as LfResult).leads)) {
+    let lf: LfResult = payload as LfResult;
+    try {
+      const fresh = await leadFinderResult(id);
+      if (fresh.status === "terminated") lf = fresh;
+    } catch {}
+    return json({ ok: true, found: await applyLeadFinder({ ...lf, id }, "webhook") });
+  }
   // The webhook is unsigned, so the result is re-read from BetterContact with our key when possible.
   let res: BcResult = payload;
   try {

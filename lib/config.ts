@@ -25,6 +25,8 @@ export interface Settings {
   ingest_every_min: number;
   lookback_days: number;
   auto_followup_days: number;
+  /** BetterContact charges up to 10 credits per mobile number vs ~1 per email: off by default. */
+  find_phones: boolean;
   sender_name: string;
   physical_address: string;
   categories: Record<Category, CategoryConf>;
@@ -44,6 +46,7 @@ export const DEFAULT_SETTINGS: Settings = {
   ingest_every_min: 20,
   lookback_days: 2,
   auto_followup_days: 0,
+  find_phones: false,
   sender_name: "",
   physical_address: "",
   categories: {
@@ -115,8 +118,8 @@ export function unseal(blob: string) {
   return Buffer.concat([d.update(b.subarray(28)), d.final()]).toString("utf8");
 }
 
-export type SecretName = "COURTLISTENER_API_KEY" | "BETTERCONTACT_API_KEY" | "OPENAI_API_KEY" | "RESEND_API_KEY";
-export const SECRET_NAMES: SecretName[] = ["COURTLISTENER_API_KEY", "BETTERCONTACT_API_KEY", "OPENAI_API_KEY", "RESEND_API_KEY"];
+export type SecretName = "COURTLISTENER_API_KEY" | "BETTERCONTACT_API_KEY" | "OPENAI_API_KEY" | "RESEND_API_KEY" | "OPENCORPORATES_API_KEY";
+export const SECRET_NAMES: SecretName[] = ["COURTLISTENER_API_KEY", "BETTERCONTACT_API_KEY", "OPENAI_API_KEY", "RESEND_API_KEY", "OPENCORPORATES_API_KEY"];
 
 /**
  * API keys never contain spaces. Pasting often brings extras along: "Token abc…", "X-API-Key: abc…",

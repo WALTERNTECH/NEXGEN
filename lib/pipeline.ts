@@ -17,7 +17,8 @@ import { splitFullName } from "./extract";
 import { companyFor, heuristicExtract, llmRefine } from "./extract";
 import { caseDetails } from "./figures";
 import { money } from "./render";
-import { enrich, result, leadIdOf, GOOD_EMAIL, type BcResult } from "./bettercontact";
+import { enrich, result, leadIdOf, leadFinder, leadFinderResult, GOOD_EMAIL, type BcResult, type LfResult, type LfLead } from "./bettercontact";
+import { findOwner, findWebsite } from "./owners";
 import { render, sendMail, mailReady, type LeadVars } from "./mailer";
 import { checkInbox } from "./inbox";
 import { notify } from "./push";
@@ -390,6 +391,7 @@ export async function enrichPending(only?: string | string[]): Promise<string> {
         linkedinUrl: r.linkedin_url,
       })),
       webhookUrl(),
+      (await getSettings()).find_phones,
     );
     await q(
       `update leads set bc_job_id = $1, status = 'enriching', enrich_started_at = now(), enrich_attempts = enrich_attempts + 1, updated_at = now()
@@ -469,6 +471,16 @@ export async function pollEnrichment(): Promise<string> {
   let done = 0;
   for (const j of jobs) {
     try {
+      if (j.bc_job_id.startsWith("lf:")) {
+        const r = await leadFinderResult(j.bc_job_id.slice(3));
+        if (r.status === "terminated") {
+          await applyLeadFinder({ ...r, id: j.bc_job_id.slice(3) }, "poll");
+          done++;
+        } else if (r.status === "unknown" || Date.now() - Date.parse(j.started) > 6 * 3600_000) {
+          await q(`update leads set status = 'enrichment_failed', updated_at = now() where bc_job_id = $1 and status = 'enriching'`, [j.bc_job_id]);
+        }
+        continue;
+      }
       const r = await result(j.bc_job_id);
       if (r.status === "terminated") {
         await applyEnrichment(r, "poll");
@@ -481,6 +493,155 @@ export async function pollEnrichment(): Promise<string> {
     }
   }
   return `${done} finished`;
+}
+
+// ---------------- Owner finder: registries → website → BetterContact Lead Finder ----------------
+
+interface OwnerRow {
+  [k: string]: unknown;
+  id: string;
+  company_name: string;
+  court_id: string | null;
+  status: string;
+  is_historical_backfill: boolean;
+  company_domain: string | null;
+  founder_full_name: string | null;
+}
+
+/**
+ * For leads whose filing names no owner: look the company up in state registries (free) and find its website (free).
+ * A name goes to normal enrichment; a website alone goes to Lead Finder (owner-type titles at that domain, email included).
+ * Runs automatically for incoming leads only; backfill leads only when you press "Find owner".
+ */
+export async function findOwners(onlyId?: string, budgetMs = 20_000): Promise<string> {
+  const t0 = Date.now();
+  const rows = await q<OwnerRow>(
+    onlyId
+      ? `select id, company_name, court_id, status, is_historical_backfill, company_domain, founder_full_name from leads where id = $1`
+      : `select id, company_name, court_id, status, is_historical_backfill, company_domain, founder_full_name from leads
+         where founder_full_name is null and owner_lookup_at is null and details_checked_at is not null
+           and status = 'enrichment_failed' and direct_email is null and is_historical_backfill = false
+         order by created_at desc limit 4`,
+    onlyId ? [onlyId] : [],
+  );
+  const s = await getSettings();
+  const bcKey = await secret("BETTERCONTACT_API_KEY");
+  let names = 0;
+  let finder = 0;
+  for (const r of rows) {
+    if (Date.now() - t0 > budgetMs) break;
+    const { hit, tried } = r.founder_full_name ? { hit: null, tried: [] as string[] } : await findOwner(r.company_name, r.court_id);
+    const domain = r.company_domain ?? (await findWebsite(r.company_name, r.court_id));
+    const note = [tried.length ? `checked ${tried.join(", ")}` : null, domain ? `website ${domain}` : "no website found", hit ? `owner ${hit.name} (${hit.source})` : null]
+      .filter(Boolean)
+      .join(" · ");
+    if (hit) {
+      names++;
+      await q(
+        `update leads set founder_full_name = $2, founder_first_name = $3, founder_last_name = $4, founder_title = $5, founder_source = $6,
+           company_domain = coalesce(company_domain, $7), owner_lookup_at = now(), owner_lookup_note = $8,
+           status = case when status in ('enrichment_failed','pending_details') then (case when is_historical_backfill then 'not_enriched_backfill' else 'discovered' end) else status end,
+           bc_job_id = null, updated_at = now()
+         where id = $1`,
+        [r.id, hit.name, hit.first, hit.last, hit.title, hit.source, domain, note],
+      );
+      continue;
+    }
+    if (domain && bcKey && (!r.is_historical_backfill || onlyId) && !r.founder_full_name) {
+      try {
+        const id = await leadFinder(domain, webhookUrl(), s.find_phones);
+        finder++;
+        await q(
+          `update leads set company_domain = $2, owner_lookup_at = now(), owner_lookup_note = $3, bc_job_id = $4, status = 'enriching',
+             enrich_started_at = now(), enrich_attempts = enrich_attempts + 1, updated_at = now() where id = $1`,
+          [r.id, domain, note + " · searching owner at website", `lf:${id}`],
+        );
+        continue;
+      } catch (e) {
+        await logRun("enrich", false, `Lead Finder for ${r.company_name}: ${(e as Error).message}`);
+      }
+    }
+    await q(`update leads set company_domain = coalesce(company_domain, $2), owner_lookup_at = now(), owner_lookup_note = $3, updated_at = now() where id = $1`, [
+      r.id,
+      domain,
+      note,
+    ]);
+  }
+  if (names || finder)
+    await logRun("enrich", true, `Owner finder: ${names} owner name${names === 1 ? "" : "s"} from registries, ${finder} website search${finder === 1 ? "" : "es"} sent to Lead Finder`);
+  return `${rows.length} checked, ${names} names, ${finder} website searches`;
+}
+
+/** Save a found contact on a lead that is waiting for it. Keeps the one-lead-per-address rule. */
+async function saveFound(
+  leadId: string,
+  c: {
+    email: string | null;
+    emailStatus: string | null;
+    phone: string | null;
+    linkedin: string | null;
+    title: string | null;
+    domain: string | null;
+    name?: { full: string; first: string; last: string } | null;
+  },
+) {
+  let email = c.email;
+  if (email) {
+    const taken = await one(`select id from leads where direct_email = $1 and id <> $2`, [email, leadId]);
+    if (taken) email = null;
+  }
+  const ok = Boolean(email || c.phone);
+  const upd = await q(
+    `update leads set direct_email = $2, email_status = $3, direct_mobile = $4, linkedin_url = coalesce($5, linkedin_url),
+       founder_title = coalesce(founder_title, $6), company_domain = coalesce(company_domain, $7),
+       founder_full_name = coalesce(founder_full_name, $9), founder_first_name = coalesce(founder_first_name, $10),
+       founder_last_name = coalesce(founder_last_name, $11),
+       founder_source = coalesce(founder_source, case when $9::text is null then null else 'BetterContact Lead Finder' end),
+       status = $8, updated_at = now()
+     where id = $1 and status = 'enriching' returning id`,
+    [leadId, email, c.emailStatus, c.phone, c.linkedin, c.title, c.domain, ok ? "enriched" : "enrichment_failed", c.name?.full ?? null, c.name?.first ?? null, c.name?.last ?? null],
+  ).catch((e) => {
+    if (String(e.code) === "23505")
+      return q(`update leads set status = 'enrichment_failed', updated_at = now() where id = $1 and status = 'enriching' returning id`, [leadId]);
+    throw e;
+  });
+  return { saved: upd.length > 0 && ok, email };
+}
+
+/** Apply a terminated Lead Finder result (owner-type people at the company's website). */
+export async function applyLeadFinder(res: LfResult, via: "webhook" | "poll"): Promise<number> {
+  const id = res.id ?? res.request_id;
+  if (res.status !== "terminated" || !id) return 0;
+  const lead = await one<LeadRow>(`select * from leads where bc_job_id = $1`, [`lf:${id}`]);
+  if (!lead || lead.status !== "enriching") return 0;
+  const people = (res.leads ?? []) as LfLead[];
+  const rank = (x: LfLead) => (GOOD_EMAIL.has(String(x.contact_email_address_status)) ? 0 : x.contact_phone_number ? 1 : 2);
+  const best = people.slice().sort((x, y) => rank(x) - rank(y))[0];
+  const email = best && GOOD_EMAIL.has(String(best.contact_email_address_status)) ? best.contact_email_address!.trim().toLowerCase() : null;
+  const full = best?.contact_full_name || [best?.contact_first_name, best?.contact_last_name].filter(Boolean).join(" ") || null;
+  const { saved, email: savedEmail } = await saveFound(lead.id, {
+    email,
+    emailStatus: best?.contact_email_address_status ?? null,
+    phone: best?.contact_phone_number?.trim() || null,
+    linkedin: best?.contact_linkedin_profile_url ?? null,
+    title: best?.contact_job_title ?? null,
+    domain: best?.company_domain ?? null,
+    name: full && best?.contact_first_name && best?.contact_last_name ? { full, first: best.contact_first_name, last: best.contact_last_name } : null,
+  });
+  await logRun(via === "webhook" ? "webhook" : "enrich", true, `Lead Finder ${via} for ${lead.company_name}: ${saved ? `${full ?? "owner"} found` : "no owner contact found"}`, {
+    request_id: id,
+    credits_left: res.credits_left,
+  });
+  if (!saved) return 0;
+  await notify({
+    title: `Contact found — ${lead.company_name}`,
+    body: [full, savedEmail, best?.contact_phone_number].filter(Boolean).join(" · "),
+    url: `/leads?lead=${lead.id}`,
+    tag: `contact-${lead.id}`,
+  });
+  const s = await getSettings();
+  if (savedEmail && s.categories[lead.category]?.auto_send && (await templateSaved(lead.category))) await queueEmail(lead.id, "initial", "auto");
+  return 1;
 }
 
 // ---------------- Module C / Update D: zero-duplicate outreach ----------------
@@ -635,6 +796,7 @@ export async function tick(opts: { forceIngest?: boolean } = {}) {
   await setSetting("last_tick_at", new Date().toISOString());
   await step("ingest", () => ingest(opts.forceIngest));
   await step("details", () => refreshDetails(Math.max(5_000, 30_000 - (Date.now() - t0))));
+  await step("owners", () => findOwners(undefined, Math.max(5_000, 40_000 - (Date.now() - t0))));
   await step("enrich", () => enrichPending());
   await step("poll", () => pollEnrichment());
   await step("backfill", () => processBackfill(Math.max(3_000, 40_000 - (Date.now() - t0))));

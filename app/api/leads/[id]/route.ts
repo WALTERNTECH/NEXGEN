@@ -2,7 +2,7 @@ import { after } from "next/server";
 import { q, one } from "@/lib/db";
 import { LEAD_COLS } from "@/lib/leads";
 import { splitFullName } from "@/lib/extract";
-import { queueEmail, processQueue, enrichPending, refreshDetails, type EmailKind } from "@/lib/pipeline";
+import { queueEmail, processQueue, enrichPending, refreshDetails, findOwners, type EmailKind } from "@/lib/pipeline";
 import { getSettings, getTemplate, type Category } from "@/lib/config";
 import { render } from "@/lib/render";
 import { sendMail } from "@/lib/mailer";
@@ -109,6 +109,13 @@ export async function POST(req: Request, { params }: Ctx) {
     if (!l.founder_last_name) return bad("Add the owner's full name first");
     const r = await enrichPending(id);
     return /^sent/.test(r) ? json({ ok: true, result: r, ...(await detail(id)) }) : bad(r);
+  }
+  if (b.action === "owner") {
+    const r = await findOwners(id, 60_000);
+    // An incoming lead with a fresh owner name is enriched right away; backfill waits for Enrich now.
+    const l = await one<{ status: string; is_historical_backfill: boolean }>(`select status, is_historical_backfill from leads where id = $1`, [id]);
+    if (l?.status === "discovered" && !l.is_historical_backfill) await enrichPending(id);
+    return json({ ok: true, result: r, ...(await detail(id)) });
   }
   if (b.action === "details") {
     await refreshDetails(50_000, id);
