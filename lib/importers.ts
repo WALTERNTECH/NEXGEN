@@ -46,7 +46,8 @@ function titleCase(s: string) {
   if (s !== s.toUpperCase()) return s.trim();
   return s
     .toLowerCase()
-    .replace(/\b([a-z])/g, (m) => m.toUpperCase())
+    // Capitalise word starts, but not the letter after an apostrophe ("Wendy's", not "Wendy'S").
+    .replace(/(^|[\s(&\/-])([a-z])/g, (_m, a: string, b: string) => a + b.toUpperCase())
     .replace(/\bLlc\b/g, "LLC")
     .replace(/\bInc\b/g, "Inc")
     .replace(/\bDba\b/g, "DBA")

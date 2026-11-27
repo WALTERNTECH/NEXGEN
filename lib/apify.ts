@@ -152,7 +152,7 @@ export function parseNyDebtor(raw: string): { company: string; dba: string | nul
   return ta ? { company: ta[1].trim(), dba: ta[2].trim(), owner } : { company: t, dba: null, owner };
 }
 
-function toRows(feed: ApifyFeed, items: unknown[]): ImportRow[] {
+function toRows(feed: ApifyFeed, items: unknown[], minAmount = 0): ImportRow[] {
   const f = APIFY_FEEDS[feed];
   const rows: ImportRow[] = [];
   const base = (name: string, ref: string, date: string | null, amount: number, address: string | null, city: string | null, state: string | null, url: string): ImportRow => ({
@@ -215,7 +215,7 @@ function toRows(feed: ApifyFeed, items: unknown[]): ImportRow[] {
       row.owner = d.owner ? { name: d.owner, title: "Responsible person (NY tax warrant)" } : null;
       byCompany.set(key, row);
     }
-    rows.push(...byCompany.values());
+    rows.push(...[...byCompany.values()].filter((r) => r.amount >= minAmount));
   } else {
     for (const it of items as UsLien[]) {
       const names = it.debtorNames?.length ? it.debtorNames : it.debtorName ? [it.debtorName] : [];
@@ -254,7 +254,7 @@ export async function runApifyFeeds(): Promise<string> {
       }
       if (status === "SUCCEEDED") {
         const items = await apify<unknown[]>(`/datasets/${run.data.defaultDatasetId}/items?clean=true&format=json&limit=5000`);
-        const rows = toRows(running, items);
+        const rows = toRows(running, items, s.tax_min_amount);
         const added = await saveRows(rows, s.individual_min_amount);
         all[running] = { ...st, runId: null, datasetId: null, lastRunId: st.runId, lastSince: st.pendingSince ?? st.lastSince, lastSuccessAt: new Date().toISOString(), lastRecords: items.length, lastAdded: added, lastCostUsd: run.data.usageTotalUsd ?? null, error: null };
         await setSetting("apify_state", all);
