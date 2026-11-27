@@ -47,6 +47,8 @@ async function view() {
       const sba = await getSetting<Record<string, unknown>>("sba_import");
       return {
         cdtfa: await getSetting("cdtfa_status"),
+        states: await getSetting("tax_states_status"),
+        stateList: (await import("@/lib/statetax")).TAX_STATES,
         sba: sba ? { url: sba.url, offset: sba.offset, size: sba.size, scanned: sba.scanned, matched: sba.matched, added: sba.added, status: sba.status, finished_at: sba.finished_at ?? null } : null,
       };
     })(),

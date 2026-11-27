@@ -18,10 +18,11 @@ const CDTFA_PAGE = "https://www.cdtfa.ca.gov/taxes-and-fees/top500.htm";
 const SBA_PAGE = "https://data.sba.gov/dataset/7a-504-foia";
 const UA = { "User-Agent": "Mozilla/5.0 (compatible; nexgen-import)" };
 
-interface Row {
+export interface ImportRow {
   key: string;
   category: Category;
-  source: "cdtfa" | "sba";
+  /** cdtfa | sba | tax_<state> */
+  source: string;
   company: string;
   dba: string | null;
   address: string | null;
@@ -35,7 +36,11 @@ interface Row {
   caseName: string;
   url: string;
   raw: Record<string, unknown>;
+  /** A person the list names as owner/officer (gives the email search a name). */
+  owner?: { name: string; title: string | null } | null;
+  figuresSource?: string;
 }
+type Row = ImportRow;
 
 function titleCase(s: string) {
   if (s !== s.toUpperCase()) return s.trim();
@@ -56,12 +61,14 @@ function isoDate(s: string | undefined) {
 }
 
 /** Insert new companies (or refresh the amount for known ones). Returns how many were new. */
-async function save(rows: Row[], minIndividual: number): Promise<number> {
+export async function saveRows(rows: Row[], minIndividual: number): Promise<number> {
   let added = 0;
   for (const r of rows) {
-    const individual = !isBusiness(r.company) && looksLikePerson(r.company);
+    const individual = !isBusiness(r.company) && looksLikePerson(titleCase(r.company));
     if (individual && r.amount < minIndividual) continue;
-    const person = individual ? splitFullName(r.company) : null;
+    const ownerName = individual ? titleCase(r.company) : r.owner && looksLikePerson(titleCase(r.owner.name)) ? titleCase(r.owner.name) : null;
+    const person = ownerName ? splitFullName(ownerName) : null;
+    const listName = r.source === "cdtfa" ? "CDTFA list" : r.source === "sba" ? "SBA loan record" : "state tax list";
     const res = await q<{ inserted: boolean }>(
       `insert into leads (external_case_id, category, case_name, court_name, company_name, dba, distress_type, debt_amount, debt_amount_text,
          tax_debt, creditor_summary, filing_date, insolvency_stage, status, cl_url, raw, source, biz_state, biz_city, biz_address,
@@ -91,12 +98,12 @@ async function save(rows: Row[], minIndividual: number): Promise<number> {
         r.city ? titleCase(r.city) : null,
         r.address,
         individual,
-        individual ? titleCase(r.company) : null,
+        ownerName,
         person?.first ?? null,
         person?.last ?? null,
-        individual ? "Owner (individual)" : null,
-        individual ? (r.source === "cdtfa" ? "CDTFA list" : "SBA loan record") : null,
-        r.source === "cdtfa" ? "CDTFA Top 500 sales & use tax delinquencies" : "SBA 7(a) loan record (gross charge-off)",
+        ownerName ? (individual ? "Owner (individual)" : r.owner?.title || "Owner/officer") : null,
+        ownerName ? listName : null,
+        r.figuresSource ?? (r.source === "cdtfa" ? "CDTFA Top 500 sales & use tax delinquencies" : "SBA 7(a) loan record (gross charge-off)"),
       ],
     );
     if (res[0]?.inserted) added++;
@@ -143,7 +150,7 @@ export async function importCdtfa(force = false): Promise<string> {
       raw: { partners, paid: f[7] || null },
     });
   }
-  const added = await save(rows, s.individual_min_amount);
+  const added = await saveRows(rows, s.individual_min_amount);
   await setSetting("cdtfa_imported_at", new Date().toISOString());
   await setSetting("cdtfa_status", { rows: rows.length, added, at: new Date().toISOString() });
   await logRun("ingest", true, `Tax arrears (CDTFA Top 500): ${rows.length} businesses on the list, ${added} new — queued for owner & email search`);
@@ -267,7 +274,7 @@ export async function importSba(budgetMs = 30_000): Promise<string> {
         raw: { bank, naics: v("NaicsDescription").trim(), businessType: v("BusinessType"), approved: v("GrossApproval"), approvalDate: v("ApprovalDate") },
       });
     }
-    job.added += await save(rows, s.individual_min_amount);
+    job.added += await saveRows(rows, s.individual_min_amount);
     job.offset = end + 1;
     if (r.status === 200 || (job.size && job.offset >= job.size)) {
       job.status = "done";

@@ -2,7 +2,7 @@ import type { NextConfig } from "next";
 
 const config: NextConfig = {
   poweredByHeader: false,
-  serverExternalPackages: ["@electric-sql/pglite", "pg", "imapflow", "mailparser", "web-push"],
+  serverExternalPackages: ["@electric-sql/pglite", "pg", "imapflow", "mailparser", "web-push", "exceljs"],
   async headers() {
     return [
       {

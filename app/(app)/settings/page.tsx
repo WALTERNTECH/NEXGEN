@@ -14,6 +14,8 @@ interface View {
     source_cdtfa: boolean;
     source_sba: boolean;
     sba_months: number;
+    tax_states: string[];
+    tax_min_amount: number;
     categories: Record<Category, { on: boolean; query: string }>;
   };
   defaults: Record<Category, string>;
@@ -24,6 +26,8 @@ interface View {
   imports?: {
     cdtfa: { rows: number; added: number; at: string } | null;
     sba: { url: string; offset: number; size: number; scanned: number; matched: number; added: number; status: string; finished_at: string | null } | null;
+    states?: Record<string, { at: string; rows: number; added: number; error?: string }> | null;
+    stateList?: Record<string, { label: string; page: string }>;
   };
 }
 
@@ -406,6 +410,53 @@ export default function SettingsPage() {
               aria-label="Tax arrears source"
               aria-pressed={v.settings.source_cdtfa}
               onClick={() => run("cdtfa", () => api("/api/settings", { method: "PUT", json: { settings: { source_cdtfa: !v.settings.source_cdtfa } } }), "Saved")}
+            />
+          </div>
+          <div className="field">
+            <b>Tax arrears — other states&apos; published lists</b>
+            <div className="small">Checked daily. Tap a state to switch it on or off.</div>
+            <div className="chips" style={{ marginTop: 6 }}>
+              {Object.entries(v.imports?.stateList ?? {}).map(([code, st]) => {
+                const on = v.settings.tax_states.includes(code);
+                const status = v.imports?.states?.[code];
+                return (
+                  <button
+                    key={code}
+                    className={`chip ${on ? "on" : ""}`}
+                    title={status ? (status.error ? `Last check failed: ${status.error}` : `${status.rows} on the list, ${status.added} new at last import`) : "Not imported yet"}
+                    onClick={() =>
+                      run("st-" + code, () =>
+                        api("/api/settings", {
+                          method: "PUT",
+                          json: { settings: { tax_states: on ? v.settings.tax_states.filter((x) => x !== code) : [...v.settings.tax_states, code] } },
+                        }),
+                      )
+                    }
+                  >
+                    {st.label}
+                    {status && !status.error ? ` · ${status.rows}` : status?.error ? " · error" : ""}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="small" style={{ marginTop: 6 }}>
+              Not available automatically: Massachusetts and Rhode Island block automated access, Wisconsin and South Carolina don&apos;t answer scripts, Oregon shows its list
+              only in an interactive portal, Connecticut sends it by email on request, Georgia and Louisiana stopped publishing.
+            </div>
+          </div>
+          <div className="row" style={{ justifyContent: "space-between", gap: 12 }}>
+            <div>
+              <b>Minimum unpaid tax</b>
+              <div className="small">Companies owing less than this on a state list are skipped.</div>
+            </div>
+            <input
+              className="input"
+              type="number"
+              min={0}
+              step={1000}
+              style={{ width: 140 }}
+              defaultValue={v.settings.tax_min_amount}
+              onBlur={(e) => run("tmin", () => api("/api/settings", { method: "PUT", json: { settings: { tax_min_amount: Number(e.target.value) } } }), "Saved")}
             />
           </div>
           <div className="row" style={{ justifyContent: "space-between", gap: 12 }}>
