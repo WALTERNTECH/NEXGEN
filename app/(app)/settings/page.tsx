@@ -31,6 +31,16 @@ function urlB64ToUint8(b64: string) {
 
 type BIPEvent = Event & { prompt: () => Promise<void> };
 
+interface SearchTest {
+  ok: boolean;
+  message?: string;
+  days?: number;
+  count?: number | null;
+  kept?: number;
+  sample?: { caption: string; filed?: string; kept: boolean; company: string | null; owner: string | null }[];
+  searchesLeft?: number;
+}
+
 export default function SettingsPage() {
   const { toast, refresh, feed } = useFeed();
   const [v, setV] = useState<View | null>(null);
@@ -40,7 +50,8 @@ export default function SettingsPage() {
   const [adv, setAdv] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [cats, setCats] = useState<View["settings"]["categories"] | null>(null);
-  const [sched, setSched] = useState({ ingest_every_min: 15, lookback_days: 7 });
+  const [sched, setSched] = useState({ ingest_every_min: 20, lookback_days: 2 });
+  const [tests, setTests] = useState<Partial<Record<Category, SearchTest>>>({});
   const [pushState, setPushState] = useState<"unsupported" | "off" | "on" | "denied" | "needs-install">("off");
   const [installEvt, setInstallEvt] = useState<BIPEvent | null>(null);
 
@@ -357,10 +368,46 @@ export default function SettingsPage() {
                 />
               </div>
               <textarea id={`q-${c}`} className="textarea" style={{ minHeight: 60, fontFamily: "ui-monospace, monospace", fontSize: 12 }} value={cats[c].query} onChange={(e) => setCats({ ...cats, [c]: { ...cats[c], query: e.target.value } })} />
-              {cats[c].query !== v.defaults[c] && (
-                <button className="btn sm" style={{ alignSelf: "flex-start" }} onClick={() => setCats({ ...cats, [c]: { ...cats[c], query: v.defaults[c] } })}>
-                  Reset to default
+              <div className="row">
+                <button
+                  className="btn sm"
+                  disabled={busy === `t-${c}`}
+                  onClick={async () => {
+                    setBusy(`t-${c}`);
+                    const p = new URLSearchParams({ check: "query", cat: c, q: cats[c].query, days: String(sched.lookback_days) });
+                    const r = await api<SearchTest>(`/api/settings?${p}`).catch((e) => ({ ok: false, message: (e as Error).message }) as SearchTest);
+                    setTests({ ...tests, [c]: r });
+                    setBusy(null);
+                  }}
+                >
+                  {busy === `t-${c}` ? "Searching…" : "Test search"}
                 </button>
+                {cats[c].query !== v.defaults[c] && (
+                  <button className="btn sm" onClick={() => setCats({ ...cats, [c]: { ...cats[c], query: v.defaults[c] } })}>
+                    Reset to default
+                  </button>
+                )}
+              </div>
+              {tests[c] && (
+                <div className="notice info" style={{ fontSize: 12 }}>
+                  {tests[c]!.ok ? (
+                    <>
+                      <b>
+                        {tests[c]!.count ?? 0} filings in the last {tests[c]!.days} days match; {tests[c]!.kept} of the newest {tests[c]!.sample?.length ?? 0} pass the
+                        distressed-business check.
+                      </b>
+                      {(tests[c]!.sample ?? []).slice(0, 8).map((x, i) => (
+                        <div key={i}>
+                          {x.kept ? "✓" : "✗"} {x.caption}
+                          {x.kept && x.owner ? ` — owner: ${x.owner}` : ""}
+                        </div>
+                      ))}
+                    </>
+                  ) : (
+                    tests[c]!.message
+                  )}
+                  {typeof tests[c]!.searchesLeft === "number" && <div className="small">{tests[c]!.searchesLeft} CourtListener searches left this hour.</div>}
+                </div>
               )}
             </div>
           ))}

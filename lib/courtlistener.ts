@@ -46,22 +46,50 @@ export class RateLimited extends Error {
   }
 }
 
-const LIMITS = { search: 4, rest: 30 } as const;
+/**
+ * Observed limits on this CourtListener account: search 5/minute and 50/hour.
+ * We stay under both (search 4/min, 44/hour) and keep a separate allowance for document reads.
+ */
+const LIMITS = {
+  search: { per: "minute", max: 4 },
+  search_hour: { per: "hour", max: 44 },
+  rest: { per: "minute", max: 30 },
+} as const;
+type Bucket = keyof typeof LIMITS;
 
-async function takeBudget(bucket: keyof typeof LIMITS) {
+async function take(bucket: Bucket) {
   const r = await q<{ used: number }>(
-    `insert into cl_budget (bucket, minute, used) values ($1, date_trunc('minute', now()), 1)
+    `insert into cl_budget (bucket, minute, used) values ($1, date_trunc($2, now()), 1)
      on conflict (bucket) do update set
        used = case when cl_budget.minute = excluded.minute then cl_budget.used + 1 else 1 end,
        minute = excluded.minute
      returning used`,
-    [bucket],
+    [bucket, LIMITS[bucket].per],
   );
-  if ((r[0]?.used ?? 0) > LIMITS[bucket]) throw new RateLimited();
+  return (r[0]?.used ?? 0) <= LIMITS[bucket].max;
 }
 
-async function exhaust(bucket: keyof typeof LIMITS) {
-  await q(`update cl_budget set used = 999, minute = date_trunc('minute', now()) where bucket = $1`, [bucket]).catch(() => {});
+async function takeBudget(kind: "search" | "rest") {
+  if (kind === "rest") {
+    if (!(await take("rest"))) throw new RateLimited();
+    return;
+  }
+  if (!(await take("search_hour"))) throw new RateLimited();
+  if (!(await take("search"))) throw new RateLimited();
+}
+
+/** Remaining searches this hour, for the dashboard. */
+export async function searchesLeftThisHour() {
+  const r = await q<{ used: number; fresh: boolean }>(
+    `select used, minute = date_trunc('hour', now()) as fresh from cl_budget where bucket = 'search_hour'`,
+  );
+  const used = r[0]?.fresh ? r[0].used : 0;
+  return Math.max(0, LIMITS.search_hour.max - used);
+}
+
+async function exhaust(kind: "search" | "rest", hourly: boolean) {
+  const bucket: Bucket = kind === "rest" ? "rest" : hourly ? "search_hour" : "search";
+  await q(`update cl_budget set used = 999, minute = date_trunc($2, now()) where bucket = $1`, [bucket, LIMITS[bucket].per]).catch(() => {});
 }
 
 async function clFetch(url: string) {
@@ -75,7 +103,8 @@ async function clFetch(url: string) {
     signal: AbortSignal.timeout(40_000),
   });
   if (r.status === 429) {
-    await exhaust(bucket);
+    const body = await r.text();
+    await exhaust(bucket, /hour/i.test(body));
     throw new RateLimited();
   }
   if (!r.ok) throw new Error(`CourtListener ${r.status}: ${(await r.text()).slice(0, 200)}`);

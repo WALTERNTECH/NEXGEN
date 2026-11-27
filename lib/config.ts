@@ -41,7 +41,7 @@ export const DEFAULT_SETTINGS: Settings = {
   auto_send: false,
   send_gap_min: 2,
   daily_limit: 50,
-  ingest_every_min: 15,
+  ingest_every_min: 20,
   lookback_days: 2,
   auto_followup_days: 0,
   sender_name: "",

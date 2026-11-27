@@ -21,7 +21,8 @@ import {
   type Mailbox,
 } from "@/lib/config";
 import { verifyMailbox } from "@/lib/mailer";
-import { ping } from "@/lib/courtlistener";
+import { ping, searchCategory, searchesLeftThisHour, ymd, RateLimited } from "@/lib/courtlistener";
+import { companyFor, heuristicExtract } from "@/lib/extract";
 import { account } from "@/lib/bettercontact";
 import { webhookUrl } from "@/lib/pipeline";
 import { logRun } from "@/lib/runs";
@@ -46,6 +47,30 @@ async function view() {
 
 export async function GET(req: Request) {
   const check = new URL(req.url).searchParams.get("check");
+  if (check === "query") {
+    // Try one category's search: how many filings match, and which of them NEXGEN would keep as leads.
+    const u = new URL(req.url).searchParams;
+    const cat = u.get("cat") as (typeof CATEGORIES)[number];
+    if (!CATEGORIES.includes(cat)) return bad("Unknown category");
+    const st = await getSettings();
+    const query = u.get("q") || st.categories[cat].query;
+    const days = Math.min(60, Math.max(1, Number(u.get("days")) || st.lookback_days));
+    try {
+      const page = await searchCategory(cat, query, { after: ymd(new Date(Date.now() - days * 86_400_000)), maxPages: 1 });
+      const sample = page.dockets.slice(0, 20).map((d) => {
+        const co = companyFor(cat, d);
+        const x = co ? heuristicExtract(cat, d, co, []) : null;
+        return { caption: d.caseName, filed: d.dateFiled, kept: Boolean(co), company: co, owner: x?.founderFullName ?? null };
+      });
+      return json({ ok: true, days, count: page.count, kept: sample.filter((x) => x.kept).length, sample, searchesLeft: await searchesLeftThisHour() });
+    } catch (e) {
+      return json({
+        ok: false,
+        message: e instanceof RateLimited ? "CourtListener allows 5 searches a minute and 50 an hour on this account — try again shortly." : (e as Error).message,
+        searchesLeft: await searchesLeftThisHour(),
+      });
+    }
+  }
   if (check === "courtlistener") {
     try {
       return json({ ok: true, message: await ping() });

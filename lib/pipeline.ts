@@ -96,7 +96,7 @@ export async function ingest(force = false): Promise<string> {
     for (const cat of due) {
       const conf = s.categories[cat];
       try {
-        const { dockets, count } = await searchCategory(cat, conf.query, { after, maxPages: 2 });
+        const { dockets, count } = await searchCategory(cat, conf.query, { after, maxPages: 1 });
         const st = { found: count ?? dockets.length, known: 0, skipped: 0 };
         for (const d of dockets) {
           if (added[cat] >= MAX_NEW_PER_CATEGORY) break;
@@ -269,7 +269,7 @@ export async function refreshDetails(budgetMs = 25_000, onlyId?: string): Promis
         ? `select id, category, external_case_id, company_name, founder_full_name, status, is_historical_backfill, raw, case_name, case_number, court_id, court_name, filing_date::text as filing_date, judge, trustee, cl_url from leads where id = $1`
         : `select id, category, external_case_id, company_name, founder_full_name, status, is_historical_backfill, raw, case_name, case_number, court_id, court_name, filing_date::text as filing_date, judge, trustee, cl_url from leads
            where details_checked_at is null
-              or ((debt_amount is null or founder_full_name is null) and filing_date > current_date - 60 and details_checked_at < now() - interval '20 hours')
+              or ((debt_amount is null or founder_full_name is null) and filing_date > current_date - 45 and details_checked_at < now() - interval '3 days')
            order by (details_checked_at is null) desc, is_historical_backfill asc, created_at desc limit 12`,
       onlyId ? [onlyId] : [],
     );
