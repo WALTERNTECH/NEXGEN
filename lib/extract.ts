@@ -140,7 +140,7 @@ const US_PLAINTIFF = /^(the\s+)?(United States|U\.S\.A?\.?|USA)\b/i;
  */
 export function suitQualifies(category: Category, caseName: string) {
   const s = sides(caseName);
-  if (!s || !s.defendants.some(isBusiness)) return false;
+  if (!s || !s.defendants.some((x) => isBusiness(x) && !LENDER.test(x))) return false;
   if (category === "tax") return US_PLAINTIFF.test(s.plaintiff);
   if (category === "debt") return LENDER.test(s.plaintiff) && !US_PLAINTIFF.test(s.plaintiff) && !looksLikePerson(s.plaintiff);
   return true;
@@ -222,7 +222,8 @@ export function companyFor(category: Category, d: ClDocket): string | null {
   }
   // Tax and debt: only the business being sued, taken from the caption itself.
   if (!suitQualifies(category, d.caseName)) return null;
-  const biz = defendants(d.caseName).find(isBusiness);
+  // A bank or funder on the defending side is not a business in distress.
+  const biz = defendants(d.caseName).find((x) => isBusiness(x) && !LENDER.test(x));
   return biz ? titleCase(biz) : null;
 }
 
