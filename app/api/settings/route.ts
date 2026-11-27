@@ -9,6 +9,7 @@ import {
   appUrl,
   CATEGORIES,
   rawSecret,
+  cleanKey,
   keyShape,
   secret,
   CATEGORY_LABEL,
@@ -103,6 +104,14 @@ export async function PUT(req: Request) {
   if (b.secrets) {
     for (const [k, v] of Object.entries(b.secrets)) {
       if (!SECRET_NAMES.includes(k as SecretName)) continue;
+      if (v) {
+        // Refuse pastes that can't be a key (page text, code examples), with a plain explanation.
+        const c = cleanKey(k as SecretName, String(v));
+        if (k === "COURTLISTENER_API_KEY" && !/^[0-9a-f]{40}$/i.test(c))
+          return bad(`That isn't a CourtListener token. On courtlistener.com → Profile → Developer Tools → "Your API Token", copy just the 40-character code (letters a–f and numbers) and paste only that.`);
+        if (c.length < 12 || c.length > 200 || /process\.env|fetch\(|https?:|[{}()<>]/i.test(c))
+          return bad(`That doesn't look like an API key (it's ${c.length} characters and looks like ${/process\.env|fetch\(/i.test(c) ? "example code" : "other text"}). Copy only the key itself and paste it here.`);
+      }
       await saveSecret(k as SecretName, v ? String(v) : null);
     }
   }
