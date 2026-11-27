@@ -256,7 +256,10 @@ export async function findWebsite(company: string, courtId: string | null = null
       const title = norm(/<title[^>]*>([^<]*)/.exec(raw)?.[1] ?? "");
       const html = raw.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/g, " ");
       const hits = distinctive.filter((w) => html.includes(w)).length;
-      if (hits >= Math.min(2, distinctive.length) && mentionsState(html, state)) return finalHost;
+      // News and bankruptcy-tracking sites also print the name and state, so this rule also needs the name in the address.
+      const hostWords = finalHost.split(".")[0].replace(/[^a-z0-9]/g, "");
+      const inHost = distinctive.some((w) => hostWords.includes(w)) || hostWords === words.map((w) => w[0]).join("");
+      if (inHost && hits >= Math.min(2, distinctive.length) && mentionsState(html, state)) return finalHost;
       const titleName = norm(title.split(/\s[|–—-]\s|\s::\s/)[0] ?? "").replace(/\b(home|welcome|official site|inc|llc|corp|ltd)\b/g, "").replace(/\s+/g, " ").trim();
       if (titleName === norm(base) && words.length >= 2 && !mentionsOtherState(html, state)) return finalHost;
     } catch {}
@@ -275,8 +278,13 @@ export async function findWebsite(company: string, courtId: string | null = null
 }
 
 /** US business sites only: no government, school, military, or foreign country domains. */
+/** Sites that write ABOUT companies (bankruptcy trackers, court records, legal news, directories) — never the company itself. */
+const ABOUT_SITES =
+  /(bkalerts|bankruptcy|inforuptcy|pacermonitor|courtlistener|casetext|unicourt|trellis|docketbird|justia|law360|law\.com|reorg|debtwire|petition|chapter11|ch11|stretto|kccllc|epiq|omniagent|primeclerk|kroll|donlinrecano|bmcgroup|creditor|bizjournals|newsbreak|patch\.com|bizapedia|opencorporates|corporationwiki|buzzfile|dnb|zoominfo|manta|yelp|bbb|yellowpages|mapquest|linkedin|facebook|instagram|twitter|youtube|indeed|glassdoor|crunchbase|bloomberg|reuters|wikipedia)/i;
+
 function acceptableHost(host: string) {
   const h = host.toLowerCase();
+  if (ABOUT_SITES.test(h)) return false;
   if (/\.(gov|edu|mil|int)$/.test(h)) return false;
   const tld = h.split(".").pop() ?? "";
   if (tld.length === 2 && tld !== "us" && tld !== "co" && tld !== "io") return false; // .nz, .uk, .ca …
