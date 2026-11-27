@@ -33,8 +33,8 @@ export interface Settings {
 // CourtListener RECAP search queries. Editable in Settings.
 export const DEFAULT_QUERIES: Record<Category, string> = {
   court: `("chapter 11" OR "subchapter v" OR chapter:11)`,
-  tax: `suitNature:(Taxes OR IRS)`,
-  debt: `suitNature:("Negotiable Instrument" OR "Contract: Other" OR "Recovery of Overpayment")`,
+  tax: `suitNature:(Taxes OR IRS) AND caseName:("United States" OR USA)`,
+  debt: `suitNature:("Negotiable Instrument" OR "Contract: Other" OR "Recovery of Overpayment") AND caseName:(capital OR funding OR financial OR finance OR bank OR credit OR lending OR loan OR leasing OR advance OR factoring OR receivables OR ventures OR merchant OR acceptance)`,
 };
 
 export const DEFAULT_SETTINGS: Settings = {

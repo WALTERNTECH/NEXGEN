@@ -62,22 +62,55 @@ function titleCase(s: string) {
   return s.toLowerCase().replace(/\b([a-z])/g, (m) => m.toUpperCase()).replace(/\bLlc\b/g, "LLC").replace(/\bInc\b/g, "Inc");
 }
 
-/** Parties named on the defending side of "X v. Y". */
-function defendants(caseName: string): string[] {
-  const m = caseName.split(/\s+v\.?\s+|\s+vs\.?\s+/i);
-  if (m.length < 2) return [];
-  return m
-    .slice(1)
-    .join(" v. ")
+const SUFFIX_ONLY = /^(inc|incorporated|llc|l\.l\.c|ltd|limited|corp|corporation|co|company|lp|l\.p|llp|l\.l\.p|pllc|p\.l\.l\.c|pc|p\.c|n\.a|na|sa|plc)\.?$/i;
+
+/** Split one side of a caption into parties, keeping "UMR, Inc." together. */
+function splitSide(side: string): string[] {
+  const parts = side
     .replace(/\bet al\.?/gi, "")
-    .split(/,|\s+and\s+|\s+&\s+(?=[A-Z][a-z]+\s+[A-Z])/)
+    .split(/,|;|\s+and\s+|\s+&\s+(?=[A-Z][a-z]+\s+[A-Z])/)
     .map((s) => clean(s).replace(/^(the)\s+/i, ""))
     .filter(Boolean);
+  const out: string[] = [];
+  for (const p of parts) {
+    if (SUFFIX_ONLY.test(p) && out.length) out[out.length - 1] = `${out[out.length - 1]}, ${p}`;
+    else out.push(p);
+  }
+  return out;
+}
+
+function sides(caseName: string): { plaintiff: string; defendants: string[]; etAl: boolean } | null {
+  const m = caseName.split(/\s+v\.?\s+|\s+vs\.?\s+/i);
+  if (m.length < 2) return null;
+  const def = m.slice(1).join(" v. ");
+  return { plaintiff: clean(m[0]), defendants: splitSide(def), etAl: /\bet al\b/i.test(def) };
+}
+
+/** Parties named on the defending side of "X v. Y". */
+function defendants(caseName: string): string[] {
+  return sides(caseName)?.defendants ?? [];
 }
 
 function plaintiff(caseName: string) {
-  const m = caseName.split(/\s+v\.?\s+|\s+vs\.?\s+/i);
-  return m.length > 1 ? clean(m[0]) : null;
+  return sides(caseName)?.plaintiff ?? null;
+}
+
+/** Lenders, merchant-cash-advance funders, lessors and collectors — the plaintiffs of a real debt-collection suit. */
+const LENDER =
+  /\b(capital|funding|funder|financial|finance|bank|bancorp|credit|lending|lender|loans?|leasing|advance|factoring|receivables|acceptance|ventures|merchant|N\.?A\.?|savings|SBA|Small Business Administration|collections?|recovery|servicing)\b/i;
+
+const US_PLAINTIFF = /^(the\s+)?(United States|U\.S\.A?\.?|USA)\b/i;
+
+/**
+ * Tax: the United States sues the business. Debt: a lender/funder sues the business.
+ * Anything else (a person suing a big company, refund suits, insurer disputes) is not a distress lead.
+ */
+export function suitQualifies(category: Category, caseName: string) {
+  const s = sides(caseName);
+  if (!s || !s.defendants.some(isBusiness)) return false;
+  if (category === "tax") return US_PLAINTIFF.test(s.plaintiff);
+  if (category === "debt") return LENDER.test(s.plaintiff) && !US_PLAINTIFF.test(s.plaintiff) && !looksLikePerson(s.plaintiff);
+  return true;
 }
 
 const SIGNER_RES: RegExp[] = [
@@ -154,11 +187,10 @@ export function companyFor(category: Category, d: ClDocket): string | null {
     const p = (d.party ?? []).find((x) => isBusiness(x) && !/trustee|bank|internal revenue/i.test(x));
     return p ? titleCase(stripInRe(p)) : null;
   }
-  const defs = defendants(d.caseName);
-  const biz = defs.find(isBusiness);
-  if (biz) return titleCase(biz);
-  const p = (d.party ?? []).find((x) => isBusiness(x) && !/united states|bank\b|internal revenue/i.test(x) && x !== plaintiff(d.caseName));
-  return p ? titleCase(p) : null;
+  // Tax and debt: only the business being sued, taken from the caption itself.
+  if (!suitQualifies(category, d.caseName)) return null;
+  const biz = defendants(d.caseName).find(isBusiness);
+  return biz ? titleCase(biz) : null;
 }
 
 export function heuristicExtract(category: Category, d: ClDocket, company: string, docs: ClDoc[]): Extracted {
@@ -166,18 +198,22 @@ export function heuristicExtract(category: Category, d: ClDocket, company: strin
   const texts = allDocs.map((x) => clean(`${x.description ?? ""} ${x.snippet ?? ""}`));
   let founder: { name: string; title: string | null; source: string } | null = null;
 
-  // Tax and debt suits often name the owner personally next to the company (guarantor / responsible person).
+  // Tax and debt suits often sue the owner personally next to the company (guarantor / responsible person).
+  // Only people on the DEFENDANT side count — never the plaintiff.
   if (category !== "court") {
     const person = defendants(d.caseName).find(looksLikePerson);
-    if (person) founder = { name: titleCase(person), title: "Owner (named defendant)", source: "case caption" };
+    if (person) founder = { name: titleCase(person), title: category === "tax" ? "Owner / responsible person (defendant)" : "Owner / guarantor (defendant)", source: "case caption" };
   }
   if (!founder) {
     const s = signerFromDocs(allDocs);
     if (s) founder = { name: s.name, title: s.title, source: "court document" };
   }
-  if (!founder && category !== "court") {
-    const p = (d.party ?? []).find((x) => looksLikePerson(x) && x !== plaintiff(d.caseName));
-    if (p) founder = { name: titleCase(p), title: "Named party", source: "party list" };
+  // "Lender v. Company, et al.": when the plaintiff is a company, the people in the party list are the other defendants.
+  const sd = sides(d.caseName);
+  if (!founder && category !== "court" && sd?.etAl && !looksLikePerson(sd.plaintiff)) {
+    const plain = sd.plaintiff.toLowerCase();
+    const p = (d.party ?? []).find((x) => looksLikePerson(x) && !plain.includes(x.toLowerCase().split(" ").pop() ?? "~"));
+    if (p) founder = { name: titleCase(p), title: "Owner / guarantor (defendant)", source: "party list (et al.)" };
   }
 
   const debt = debtFromText(texts);
