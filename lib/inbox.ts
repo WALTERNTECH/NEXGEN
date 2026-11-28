@@ -1,5 +1,5 @@
 import "server-only";
-import { mailbox, getSetting, setSetting } from "./config";
+import { mailboxes, getSetting, setSetting, type Mailbox } from "./config";
 import { q, one } from "./db";
 import { notify } from "./push";
 import { logRun } from "./runs";
@@ -18,10 +18,23 @@ function stripQuoted(text: string) {
 
 const OPT_OUT = /\b(unsubscribe|remove me|stop emailing|do not contact|don't contact|take me off|not interested)\b/i;
 
-/** Pull new replies from the connected mailbox and attach them to their leads. */
+/** Pull new replies from every connected mailbox (each one has its own read position). */
 export async function checkInbox(): Promise<{ checked: number; matched: number } | null> {
-  const m = await mailbox();
-  if (!m) return null;
+  const boxes = await mailboxes();
+  if (!boxes.length) return null;
+  const results = await Promise.all(
+    boxes.map((m) =>
+      Promise.race([
+        checkOne(m).catch(() => ({ checked: 0, matched: 0 })),
+        new Promise<{ checked: number; matched: number }>((res) => setTimeout(() => res({ checked: 0, matched: 0 }), 22_000)),
+      ]),
+    ),
+  );
+  return { checked: results.reduce((a, r) => a + r.checked, 0), matched: results.reduce((a, r) => a + r.matched, 0) };
+}
+
+async function checkOne(m: Mailbox): Promise<{ checked: number; matched: number }> {
+  const stateKey = `imap_state:${m.email.toLowerCase()}`;
   const { ImapFlow } = await import("imapflow");
   const { simpleParser } = await import("mailparser");
   const c = new ImapFlow({
@@ -39,7 +52,7 @@ export async function checkInbox(): Promise<{ checked: number; matched: number }
   let checked = 0;
   let matched = 0;
   let bounced = 0;
-  const state = (await getSetting<{ uid: number; validity: string }>("imap_state")) ?? { uid: 0, validity: "" };
+  const state = (await getSetting<{ uid: number; validity: string }>(stateKey)) ?? { uid: 0, validity: "" };
   try {
     const lock = await c.getMailboxLock("INBOX");
     try {
@@ -107,7 +120,7 @@ export async function checkInbox(): Promise<{ checked: number; matched: number }
           tag: `reply-${lead.id}`,
         });
       }
-      await setSetting("imap_state", { uid: Math.max(maxUid, state.validity === validity ? state.uid : 0), validity });
+      await setSetting(stateKey, { uid: Math.max(maxUid, state.validity === validity ? state.uid : 0), validity });
     } finally {
       lock.release();
     }

@@ -236,31 +236,100 @@ export interface Mailbox {
   imap_port: number;
 }
 
-export async function mailbox(): Promise<Mailbox | null> {
+/**
+ * Several mailboxes can be connected; each category (Court / Tax / Debt) sends from the mailbox it's assigned to
+ * (settings "mailbox_routes": { tax: "richard@…", debt: "info@…" }). A category with no assignment uses the first mailbox.
+ * Passwords are stored encrypted (secret:MAILBOXES); a single older secret:MAILBOX is picked up automatically.
+ */
+export async function mailboxes(): Promise<Mailbox[]> {
+  const out: Mailbox[] = [];
   if (process.env.MAILBOX_EMAIL && process.env.MAILBOX_PASSWORD) {
     const e = process.env.MAILBOX_EMAIL;
     const p = presetFor(e);
-    return {
+    out.push({
       email: e,
       password: process.env.MAILBOX_PASSWORD,
       smtp_host: process.env.SMTP_HOST || p.smtp_host,
       smtp_port: Number(process.env.SMTP_PORT || p.smtp_port),
       imap_host: process.env.IMAP_HOST || p.imap_host,
       imap_port: Number(process.env.IMAP_PORT || p.imap_port),
-    };
+    });
   }
-  const v = await getSetting<string>("secret:MAILBOX");
-  if (!v) return null;
-  try {
-    return JSON.parse(unseal(v)) as Mailbox;
-  } catch {
-    return null;
+  const list = await getSetting<string>("secret:MAILBOXES");
+  if (list) {
+    try {
+      for (const m of JSON.parse(unseal(list)) as Mailbox[]) if (!out.some((x) => x.email === m.email)) out.push(m);
+    } catch {
+      /* unreadable — treated as none */
+    }
+  } else {
+    const v = await getSetting<string>("secret:MAILBOX");
+    if (v) {
+      try {
+        out.push(JSON.parse(unseal(v)) as Mailbox);
+      } catch {
+        /* ignore */
+      }
+    }
   }
+  return out;
 }
 
-export async function saveMailbox(m: Mailbox | null) {
-  if (!m) await q(`delete from settings where key = 'secret:MAILBOX'`);
-  else await setSetting("secret:MAILBOX", seal(JSON.stringify(m)));
+async function saveMailboxList(list: Mailbox[]) {
+  const own = list.filter((m) => m.email !== process.env.MAILBOX_EMAIL);
+  await setSetting("secret:MAILBOXES", seal(JSON.stringify(own)));
+  await q(`delete from settings where key = 'secret:MAILBOX'`);
+}
+
+/** Add a mailbox, or update it if the address is already connected. */
+export async function addMailbox(m: Mailbox) {
+  const list = (await mailboxes()).filter((x) => x.email.toLowerCase() !== m.email.toLowerCase());
+  await saveMailboxList([...list, m]);
+}
+
+export async function removeMailbox(email: string) {
+  await saveMailboxList((await mailboxes()).filter((x) => x.email.toLowerCase() !== email.toLowerCase()));
+  const routes = await mailboxRoutes();
+  for (const c of CATEGORIES) if (routes[c]?.toLowerCase() === email.toLowerCase()) delete routes[c];
+  await setSetting("mailbox_routes", routes);
+}
+
+export async function mailboxRoutes(): Promise<Partial<Record<Category, string>>> {
+  return (await getSetting<Partial<Record<Category, string>>>("mailbox_routes")) ?? {};
+}
+
+/** Assign a category to a mailbox (one mailbox per category). */
+export async function routeCategory(category: Category, email: string | null) {
+  const routes = await mailboxRoutes();
+  if (email) routes[category] = email.toLowerCase();
+  else delete routes[category];
+  await setSetting("mailbox_routes", routes);
+}
+
+/**
+ * The mailbox a category sends from: its assigned one, otherwise the first connected mailbox.
+ * If a category is assigned to a mailbox that isn't connected (yet), its emails wait — they never go out from another address.
+ */
+export async function mailboxFor(category?: Category | null): Promise<Mailbox | null> {
+  const list = await mailboxes();
+  if (!list.length) return null;
+  if (category) {
+    const to = (await mailboxRoutes())[category];
+    if (to) return list.find((m) => m.email.toLowerCase() === to) ?? null;
+  }
+  return list[0];
+}
+
+/** Which categories a mailbox sends for (an unassigned category falls to the first mailbox). */
+export async function categoriesFor(email: string): Promise<Category[]> {
+  const out: Category[] = [];
+  for (const c of CATEGORIES) if ((await mailboxFor(c))?.email.toLowerCase() === email.toLowerCase()) out.push(c);
+  return out;
+}
+
+/** The first connected mailbox (kept for callers that don't care about categories). */
+export async function mailbox(): Promise<Mailbox | null> {
+  return (await mailboxes())[0] ?? null;
 }
 
 export function presetFor(email: string) {

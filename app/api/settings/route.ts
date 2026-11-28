@@ -3,8 +3,13 @@ import {
   saveSettings,
   saveSecret,
   secretSource,
-  mailbox,
-  saveMailbox,
+  mailboxes,
+  addMailbox,
+  removeMailbox,
+  mailboxRoutes,
+  routeCategory,
+  categoriesFor,
+  setSetting,
   presetFor,
   appUrl,
   CATEGORIES,
@@ -21,8 +26,7 @@ import {
   type Mailbox,
 } from "@/lib/config";
 import { verifyMailbox } from "@/lib/mailer";
-import { checkDomain, currentCheck, warmupCap, sendPaused, inUsBusinessHours, sendPlan, WARMUP } from "@/lib/deliverability";
-import { setSetting } from "@/lib/config";
+import { checkDomain, currentCheck, warmupCap, sendPaused, inUsBusinessHours, sendPlans, markMailboxStart, WARMUP } from "@/lib/deliverability";
 import { q } from "@/lib/db";
 import { ping, searchCategory, searchesLeftThisHour, ymd, RateLimited } from "@/lib/courtlistener";
 import { companyFor, heuristicExtract } from "@/lib/extract";
@@ -35,24 +39,32 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
 async function view() {
-  const m = await mailbox();
+  const boxes = await mailboxes();
+  const st = await getSettings();
+  const plans = await sendPlans();
   const secrets: Record<string, string | null> = {};
   for (const n of SECRET_NAMES) secrets[n] = await secretSource(n);
   return {
     settings: await getSettings(),
     defaults: DEFAULT_QUERIES,
     secrets,
-    mailbox: m ? { email: m.email, smtp_host: m.smtp_host, smtp_port: m.smtp_port, imap_host: m.imap_host, imap_port: m.imap_port, fromEnv: Boolean(process.env.MAILBOX_EMAIL) } : null,
-    deliverability: m
-      ? {
-          check: await currentCheck().catch(() => null),
-          paused: await sendPaused(),
-          warmup: await warmupCap((await getSettings()).daily_limit, (await getSettings()).warmup_gap_min),
-          plan: await sendPlan(),
-          steps: WARMUP,
-          business_hours_now: inUsBusinessHours(new Date(), (await getSettings()).send_weekends),
-        }
-      : null,
+    // Every connected mailbox, the categories it sends for, its domain check, warm-up and queue.
+    mailboxes: await Promise.all(
+      boxes.map(async (m) => ({
+        email: m.email,
+        smtp_host: m.smtp_host,
+        smtp_port: m.smtp_port,
+        imap_host: m.imap_host,
+        imap_port: m.imap_port,
+        fromEnv: m.email === process.env.MAILBOX_EMAIL,
+        categories: await categoriesFor(m.email),
+        check: await currentCheck(m).catch(() => null),
+        warmup: await warmupCap(st.daily_limit, st.warmup_gap_min, m.email),
+        plan: plans.find((x) => x.email === m.email) ?? null,
+      })),
+    ),
+    routes: await mailboxRoutes(),
+    sending: { paused: await sendPaused(), steps: WARMUP, business_hours_now: inUsBusinessHours(new Date(), st.send_weekends) },
     webhook: webhookUrl() ? webhookUrl()!.replace(/token=.*/, "token=•••") : null,
     imports: await (async () => {
       const { getSetting } = await import("@/lib/config");
@@ -73,9 +85,9 @@ async function view() {
 export async function GET(req: Request) {
   const check = new URL(req.url).searchParams.get("check");
   if (check === "deliverability") {
-    const m = await mailbox();
-    if (!m) return json({ ok: false, message: "Connect a mailbox first" });
-    return json({ ok: true, result: await checkDomain(m.email, m.smtp_host) });
+    const boxes = await mailboxes();
+    if (!boxes.length) return json({ ok: false, message: "Connect a mailbox first" });
+    return json({ ok: true, result: await Promise.all(boxes.map((m) => checkDomain(m.email, m.smtp_host))) });
   }
   if (check === "query") {
     // Try one category's search: how many filings match, and which of them NEXGEN would keep as leads.
@@ -171,7 +183,9 @@ export async function PUT(req: Request) {
   const b = await body<{
     settings?: Partial<Settings>;
     secrets?: Partial<Record<SecretName, string | null>>;
-    mailbox?: (Partial<Mailbox> & { remove?: boolean }) | null;
+    mailbox?: (Partial<Mailbox> & { remove?: boolean | string }) | null;
+    /** Assign a category to a mailbox: { category: "tax", email: "richard@…" } (email null = first mailbox). */
+    route?: { category?: string; email?: string | null };
     resume_sending?: boolean;
   }>(req);
   if (b.resume_sending) {
@@ -212,9 +226,21 @@ export async function PUT(req: Request) {
       }
     }
   }
+  if (b.route?.category) {
+    if (!(CATEGORIES as string[]).includes(b.route.category)) return bad("Unknown category");
+    const email = b.route.email ? String(b.route.email).trim().toLowerCase() : null;
+    if (email && !(await mailboxes()).some((m) => m.email.toLowerCase() === email)) return bad("Connect that mailbox first");
+    await routeCategory(b.route.category as (typeof CATEGORIES)[number], email);
+    await logRun("system", true, `${CATEGORY_LABEL[b.route.category as (typeof CATEGORIES)[number]]} emails now send from ${email ?? "the first mailbox"}`);
+  }
   if (b.mailbox) {
-    if (b.mailbox.remove) await saveMailbox(null);
-    else {
+    if (b.mailbox.remove) {
+      const email = typeof b.mailbox.remove === "string" ? b.mailbox.remove : (await mailboxes())[0]?.email;
+      if (email) {
+        await removeMailbox(email);
+        await logRun("system", true, `Mailbox ${email} disconnected`);
+      }
+    } else {
       const email = String(b.mailbox.email ?? "").trim().toLowerCase();
       const password = String(b.mailbox.password ?? "");
       if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || !password) return bad("Enter the mailbox address and its password (or app password)");
@@ -232,10 +258,10 @@ export async function PUT(req: Request) {
       } catch (e) {
         return bad(`Couldn't sign in to the mailbox: ${(e as Error).message}`);
       }
-      const prev = await mailbox();
-      await saveMailbox(m);
-      // A different mailbox starts its own warm-up from today.
-      if (!prev || prev.email !== m.email) await setSetting("mailbox_since", new Date().toISOString());
+      // Adds it next to the others (or updates it if this address is already connected).
+      await addMailbox(m);
+      // Each mailbox warms up on its own, from the first time it was connected.
+      await markMailboxStart(m.email);
       await logRun("system", true, `Mailbox ${email} connected`);
       const d = await checkDomain(m.email, m.smtp_host).catch(() => null);
       if (d && !d.ready) await logRun("send", false, `${d.domain}: sending is held until its records are fixed — ${d.fixes[0] ?? ""}`);

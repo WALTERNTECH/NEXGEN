@@ -3,7 +3,7 @@
 import { whenText } from "@/components/feed";
 import { useEffect, useState } from "react";
 import { useFeed } from "@/components/feed";
-import { api, CAT_LABEL, CATS, type Category } from "@/components/util";
+import { api, CAT_LABEL, CAT_NAME, CATS, type Category } from "@/components/util";
 
 interface View {
   settings: {
@@ -28,17 +28,22 @@ interface View {
   };
   defaults: Record<Category, string>;
   secrets: Record<string, "env" | "saved" | null>;
-  mailbox: { email: string; smtp_host: string; smtp_port: number; imap_host: string; imap_port: number; fromEnv: boolean } | null;
   webhook: string | null;
   link: string | null;
-  deliverability: {
+  mailboxes: {
+    email: string;
+    smtp_host: string;
+    smtp_port: number;
+    imap_host: string;
+    imap_port: number;
+    fromEnv: boolean;
+    categories: Category[];
     check: { domain: string; free: boolean; mx: boolean; spf: { ok: boolean; record: string | null }; dkim: { ok: boolean; selector: string | null }; dmarc: { ok: boolean; record: string | null; policy: string | null }; ready: boolean; fixes: string[]; checked_at: string } | null;
-    paused: { at: string; reason: string } | null;
     warmup: { cap: number; day: number; spreadMin: number };
-    plan: { queued: number; nextAt: string | null; why: string; sentToday: number };
-    steps: readonly { upToDay: number; perDay: number }[];
-    business_hours_now: boolean;
-  } | null;
+    plan: { queued: number; nextAt: string | null; why: string; sentToday: number } | null;
+  }[];
+  routes: Partial<Record<Category, string>>;
+  sending: { paused: { at: string; reason: string } | null; steps: readonly { upToDay: number; perDay: number }[]; business_hours_now: boolean };
   imports?: {
     cdtfa: { rows: number; added: number; at: string } | null;
     sba: { url: string; offset: number; size: number; scanned: number; matched: number; added: number; status: string; finished_at: string | null } | null;
@@ -236,48 +241,79 @@ export default function SettingsPage() {
 
         <div className="card">
           <div className="card-h">
-            <h2>Mailbox</h2>
-            {v.mailbox && <span className="pill green">Connected</span>}
+            <h2>Mailboxes</h2>
+            {v.mailboxes.length > 0 && <span className="pill green">{v.mailboxes.length} connected</span>}
           </div>
           <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <p className="sub" style={{ margin: 0 }}>
-              Emails go out from this mailbox and its inbox is checked every minute for replies. For Gmail use an App Password (Google Account → Security → App passwords).
+              Each category sends from the mailbox you assign it to — e.g. Tax from one address and Debt from another. Every mailbox warms up on its own and its inbox is
+              checked every minute for replies. For Gmail use an App Password.
             </p>
-            {v.mailbox ? (
-              <div className="row" style={{ justifyContent: "space-between" }}>
-                <div>
-                  <b>{v.mailbox.email}</b>
-                  <div className="small">
-                    SMTP {v.mailbox.smtp_host}:{v.mailbox.smtp_port} · IMAP {v.mailbox.imap_host}:{v.mailbox.imap_port}
-                  </div>
-                </div>
-                {!v.mailbox.fromEnv && (
-                  <button className="btn sm danger" onClick={() => run("mb", () => api("/api/settings", { method: "PUT", json: { mailbox: { remove: true } } }), "Mailbox disconnected")}>
-                    Disconnect
-                  </button>
-                )}
+            {v.sending.paused && (
+              <div className="notice">
+                <b>Sending paused.</b> {v.sending.paused.reason}. Remove or fix the bounced addresses, then{" "}
+                <button className="btn sm" onClick={() => run("resume", () => api("/api/settings", { method: "PUT", json: { resume_sending: true } }), "Sending resumed")}>
+                  Resume sending
+                </button>
               </div>
-            ) : null}
-            {v.mailbox && v.deliverability && (() => {
-              const d = v.deliverability;
-              const c = d.check;
+            )}
+            {CATS.map((c) => {
+              const to = v.routes[c];
+              return to && !v.mailboxes.some((m) => m.email.toLowerCase() === to) ? (
+                <div className="notice" key={c}>
+                  {CAT_NAME[c]} is assigned to <b>{to}</b>, which isn&apos;t connected — its emails wait until you connect it below.
+                </div>
+              ) : null;
+            })}
+            {v.mailboxes.map((m) => {
+              const c = m.check;
               const mark = (ok: boolean, warnOnly = false) => <span className={`pill ${ok ? "green" : warnOnly ? "amber" : "red"}`}>{ok ? "OK" : warnOnly ? "Check" : "Missing"}</span>;
               return (
-                <div className="placement">
+                <div className="placement" key={m.email}>
                   <div className="row" style={{ justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
-                    <b>Inbox placement (keeping emails out of spam)</b>
-                    <button className="btn sm" disabled={busy === "dl"} onClick={() => run("dl", () => api("/api/settings?check=deliverability"), "Sender records checked again")}>
-                      {busy === "dl" ? "Checking…" : "Check again"}
-                    </button>
-                  </div>
-                  {d.paused && (
-                    <div className="notice">
-                      <b>Sending paused.</b> {d.paused.reason}. Remove or fix the bounced addresses, then{" "}
-                      <button className="btn sm" onClick={() => run("resume", () => api("/api/settings", { method: "PUT", json: { resume_sending: true } }), "Sending resumed")}>
-                        Resume sending
-                      </button>
+                    <div>
+                      <b>{m.email}</b>
+                      <div className="small">
+                        SMTP {m.smtp_host}:{m.smtp_port} · IMAP {m.imap_host}:{m.imap_port}
+                      </div>
                     </div>
-                  )}
+                    {!m.fromEnv && (
+                      <button
+                        className="btn sm danger"
+                        onClick={() => {
+                          if (confirm(`Disconnect ${m.email}? Categories assigned to it will wait until another mailbox is assigned.`))
+                            run("mb", () => api("/api/settings", { method: "PUT", json: { mailbox: { remove: m.email } } }), "Mailbox disconnected");
+                        }}
+                      >
+                        Disconnect
+                      </button>
+                    )}
+                  </div>
+                  <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+                    <span className="small">Sends for:</span>
+                    {CATS.map((cat) => {
+                      const on = v.routes[cat]?.toLowerCase() === m.email.toLowerCase();
+                      const byDefault = !v.routes[cat] && m.categories.includes(cat);
+                      return (
+                        <button
+                          key={cat}
+                          className={`chip ${on ? "on" : ""}`}
+                          title={on ? `${CAT_NAME[cat]} sends from ${m.email}` : `Send ${CAT_NAME[cat]} from ${m.email}`}
+                          onClick={() =>
+                            run(
+                              "route",
+                              () => api("/api/settings", { method: "PUT", json: { route: { category: cat, email: on ? null : m.email } } }),
+                              on ? `${CAT_NAME[cat]} unassigned` : `${CAT_NAME[cat]} now sends from ${m.email}`,
+                            )
+                          }
+                        >
+                          {on ? "✓ " : ""}
+                          {CAT_LABEL[cat]}
+                          {byDefault ? " (default)" : ""}
+                        </button>
+                      );
+                    })}
+                  </div>
                   {c && (
                     <>
                       <div className="checks">
@@ -286,107 +322,145 @@ export default function SettingsPage() {
                         <span>Policy (DMARC) {mark(c.dmarc.ok, true)}</span>
                         {!c.free && <span>Mail server (MX) {mark(c.mx)}</span>}
                       </div>
-                      {!c.ready && <div className="notice">Sending is held until the red item is fixed — mail from {c.domain} without it goes straight to spam.</div>}
+                      {!c.ready && <div className="notice">Sending from {m.email} is held until the red item is fixed — mail without it goes straight to spam.</div>}
                       {c.fixes.length > 0 && (
                         <ul className="small" style={{ margin: 0, paddingLeft: 18 }}>
                           {c.fixes.map((f) => (
-                            <li key={f} style={{ marginBottom: 4 }}>{f}</li>
+                            <li key={f} style={{ marginBottom: 4 }}>
+                              {f}
+                            </li>
                           ))}
                         </ul>
                       )}
                     </>
                   )}
                   <div className="small">
-                    <b>Warm-up day {d.warmup.day}</b> for this mailbox: one email about every <b>{d.warmup.spreadMin >= 60 ? `${+(d.warmup.spreadMin / 60).toFixed(1)} hours` : `${d.warmup.spreadMin} minutes`}</b>{" "}
-                    (±10%), up to <b>{d.warmup.cap}</b> today. After the 21-day warm-up: your limit of {v.settings.daily_limit}/day, spread across the day. {d.plan.queued > 0 && <>Queued: <b>{d.plan.queued}</b>, next {whenText(d.plan.nextAt)} — {d.plan.why}.</>} Plain text, no tracking,
-                    one-click unsubscribe; bounced addresses are never emailed again and sending pauses itself if more than 5% bounce.
-                  </div>
-                  <div className="row" style={{ justifyContent: "space-between", gap: 10 }}>
-                    <label className="small" htmlFor="wgap">
-                      Warm-up pace: one email every
-                    </label>
-                    <select
-                      id="wgap"
-                      className="input"
-                      style={{ width: 150 }}
-                      value={v.settings.warmup_gap_min}
-                      onChange={(e) =>
-                        run("pace", () => api("/api/settings", { method: "PUT", json: { settings: { warmup_gap_min: Number(e.target.value) } } }), "Warm-up pace saved")
-                      }
-                    >
-                      {[30, 45, 60, 90, 120, 180, 240].map((m) => (
-                        <option key={m} value={m}>
-                          {m < 60 ? `${m} minutes` : `${m / 60} hour${m === 60 ? "" : "s"}`}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="row" style={{ justifyContent: "space-between", gap: 10 }}>
-                    <span className="small">Send on Saturdays and Sundays too</span>
-                    <button
-                      className={`switch ${v.settings.send_weekends ? "on" : ""}`}
-                      aria-pressed={v.settings.send_weekends}
-                      aria-label="Send on weekends"
-                      onClick={() => run("wkend", () => api("/api/settings", { method: "PUT", json: { settings: { send_weekends: !v.settings.send_weekends } } }), v.settings.send_weekends ? "Weekdays only" : "Weekends on")}
-                    />
-                  </div>
-                  <div className="row" style={{ justifyContent: "space-between", gap: 10 }}>
-                    <span className="small">
-                      Send only 8 am – 5 pm US Eastern {v.settings.us_business_hours ? (d.business_hours_now ? "· sending now" : "· queued emails wait until then") : ""}
-                    </span>
-                    <button
-                      className={`switch ${v.settings.us_business_hours ? "on" : ""}`}
-                      aria-pressed={v.settings.us_business_hours}
-                      aria-label="Send only in US business hours"
-                      onClick={() => run("hours", () => api("/api/settings", { method: "PUT", json: { settings: { us_business_hours: !v.settings.us_business_hours } } }), v.settings.us_business_hours ? "Sending at any hour" : "Sending in US business hours only")}
-                    />
+                    <b>Warm-up day {m.warmup.day}</b>: one email about every{" "}
+                    <b>{m.warmup.spreadMin >= 60 ? `${+(m.warmup.spreadMin / 60).toFixed(1)} hours` : `${m.warmup.spreadMin} minutes`}</b>, up to <b>{m.warmup.cap}</b> a day
+                    {m.plan ? (
+                      <>
+                        {" "}
+                        · sent in the last 24 h: {m.plan.sentToday}
+                        {m.plan.queued > 0 && (
+                          <>
+                            {" "}
+                            · <b>{m.plan.queued} queued</b>, next {whenText(m.plan.nextAt)} — {m.plan.why}
+                          </>
+                        )}
+                      </>
+                    ) : null}
+                    .
                   </div>
                 </div>
               );
-            })()}
-            {!v.mailbox && (
-              <>
-                <div className="form-grid">
-                  <div className="field">
-                    <label htmlFor="mbe">Email address</label>
-                    <input id="mbe" className="input" type="email" autoComplete="off" value={mb.email} onChange={(e) => setMb({ ...mb, email: e.target.value })} />
-                  </div>
-                  <div className="field">
-                    <label htmlFor="mbp">Password / app password</label>
-                    <input id="mbp" className="input" type="password" autoComplete="new-password" value={mb.password} onChange={(e) => setMb({ ...mb, password: e.target.value })} />
-                  </div>
+            })}
+            {v.mailboxes.length > 0 && (
+              <div className="placement">
+                <div className="row" style={{ justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+                  <b>Sending rules (all mailboxes)</b>
+                  <button className="btn sm" disabled={busy === "dl"} onClick={() => run("dl", () => api("/api/settings?check=deliverability"), "Sender records checked again")}>
+                    {busy === "dl" ? "Checking…" : "Check records again"}
+                  </button>
                 </div>
-                <button className="btn sm" style={{ alignSelf: "flex-start" }} onClick={() => setAdv(!adv)}>
-                  {adv ? "Hide" : "Server settings (optional)"}
-                </button>
-                {adv && (
-                  <div className="form-grid">
-                    {(["smtp_host", "smtp_port", "imap_host", "imap_port"] as const).map((k) => (
-                      <div className="field" key={k}>
-                        <label htmlFor={k}>{k.replace("_", " ").toUpperCase()}</label>
-                        <input id={k} className="input" value={mb[k]} placeholder="automatic" onChange={(e) => setMb({ ...mb, [k]: e.target.value })} />
-                      </div>
+                <div className="row" style={{ justifyContent: "space-between", gap: 10 }}>
+                  <label className="small" htmlFor="wgap">
+                    Warm-up pace (each mailbox): one email every
+                  </label>
+                  <select
+                    id="wgap"
+                    className="input"
+                    style={{ width: 150 }}
+                    value={v.settings.warmup_gap_min}
+                    onChange={(e) => run("pace", () => api("/api/settings", { method: "PUT", json: { settings: { warmup_gap_min: Number(e.target.value) } } }), "Warm-up pace saved")}
+                  >
+                    {[30, 45, 60, 90, 120, 180, 240].map((x) => (
+                      <option key={x} value={x}>
+                        {x < 60 ? `${x} minutes` : `${x / 60} hour${x === 60 ? "" : "s"}`}
+                      </option>
                     ))}
-                  </div>
-                )}
-                <button
-                  className="btn primary"
-                  style={{ alignSelf: "flex-start" }}
-                  disabled={busy === "mb" || !mb.email || !mb.password}
-                  onClick={() =>
-                    run("mb", async () => {
+                  </select>
+                </div>
+                <div className="row" style={{ justifyContent: "space-between", gap: 10 }}>
+                  <span className="small">Send on Saturdays and Sundays too</span>
+                  <button
+                    className={`switch ${v.settings.send_weekends ? "on" : ""}`}
+                    aria-pressed={v.settings.send_weekends}
+                    aria-label="Send on weekends"
+                    onClick={() =>
+                      run("wkend", () => api("/api/settings", { method: "PUT", json: { settings: { send_weekends: !v.settings.send_weekends } } }), v.settings.send_weekends ? "Weekdays only" : "Weekends on")
+                    }
+                  />
+                </div>
+                <div className="row" style={{ justifyContent: "space-between", gap: 10 }}>
+                  <span className="small">
+                    Send only 8 am – 5 pm US Eastern {v.settings.us_business_hours ? (v.sending.business_hours_now ? "· sending now" : "· queued emails wait until then") : ""}
+                  </span>
+                  <button
+                    className={`switch ${v.settings.us_business_hours ? "on" : ""}`}
+                    aria-pressed={v.settings.us_business_hours}
+                    aria-label="Send only in US business hours"
+                    onClick={() =>
+                      run(
+                        "hours",
+                        () => api("/api/settings", { method: "PUT", json: { settings: { us_business_hours: !v.settings.us_business_hours } } }),
+                        v.settings.us_business_hours ? "Sending at any hour" : "Sending in US business hours only",
+                      )
+                    }
+                  />
+                </div>
+                <div className="small">
+                  Warm-up steps: {v.sending.steps.map((w, i) => `days ${i ? v.sending.steps[i - 1].upToDay + 1 : 1}–${w.upToDay}: up to ${w.perDay}/day`).join(" · ")}, then{" "}
+                  {v.settings.daily_limit}/day per mailbox. Plain text, no tracking, one-click unsubscribe; bounced addresses are never emailed again and sending pauses
+                  itself if more than 5% bounce.
+                </div>
+              </div>
+            )}
+            <div className="placement">
+              <b>{v.mailboxes.length ? "Add another mailbox" : "Connect a mailbox"}</b>
+              <div className="form-grid">
+                <div className="field">
+                  <label htmlFor="mbe">Email address</label>
+                  <input id="mbe" className="input" type="email" autoComplete="off" value={mb.email} onChange={(e) => setMb({ ...mb, email: e.target.value })} />
+                </div>
+                <div className="field">
+                  <label htmlFor="mbp">Password / app password</label>
+                  <input id="mbp" className="input" type="password" autoComplete="new-password" value={mb.password} onChange={(e) => setMb({ ...mb, password: e.target.value })} />
+                </div>
+              </div>
+              <button className="btn sm" style={{ alignSelf: "flex-start" }} onClick={() => setAdv(!adv)}>
+                {adv ? "Hide" : "Server settings (optional)"}
+              </button>
+              {adv && (
+                <div className="form-grid">
+                  {(["smtp_host", "smtp_port", "imap_host", "imap_port"] as const).map((k) => (
+                    <div className="field" key={k}>
+                      <label htmlFor={k}>{k.replace("_", " ").toUpperCase()}</label>
+                      <input id={k} className="input" value={mb[k]} placeholder="automatic" onChange={(e) => setMb({ ...mb, [k]: e.target.value })} />
+                    </div>
+                  ))}
+                </div>
+              )}
+              <button
+                className="btn primary"
+                style={{ alignSelf: "flex-start" }}
+                disabled={busy === "mb" || !mb.email || !mb.password}
+                onClick={() =>
+                  run(
+                    "mb",
+                    async () => {
                       await api("/api/settings", { method: "PUT", json: { mailbox: mb } });
                       setMb({ email: "", password: "", smtp_host: "", smtp_port: "", imap_host: "", imap_port: "" });
-                    }, "Mailbox connected")
-                  }
-                >
-                  {busy === "mb" ? "Checking sign-in…" : "Connect mailbox"}
-                </button>
-                <p className="small" style={{ margin: 0 }}>
-                  Best inbox placement: a mailbox on your own domain (you@yourcompany.com) with SPF, DKIM and DMARC set up. NEXGEN checks those records as soon as you connect.
-                </p>
-              </>
-            )}
+                    },
+                    "Mailbox connected — now pick which categories it sends for",
+                  )
+                }
+              >
+                {busy === "mb" ? "Checking sign-in…" : "Connect mailbox"}
+              </button>
+              <p className="small" style={{ margin: 0 }}>
+                Best inbox placement: a mailbox on your own domain with SPF, DKIM and DMARC set up. NEXGEN checks those records as soon as you connect.
+              </p>
+            </div>
           </div>
         </div>
       </div>

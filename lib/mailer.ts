@@ -1,7 +1,7 @@
 import "server-only";
 import nodemailer from "nodemailer";
 import { randomBytes } from "node:crypto";
-import { appUrl, mailbox, secret, getSettings, type Settings } from "./config";
+import { appUrl, mailbox, secret, getSettings, type Settings, type Mailbox } from "./config";
 
 import { render as renderText, type RenderLead } from "./render";
 
@@ -39,6 +39,8 @@ function compose(body: string, leadId: string, address: string) {
 export interface SendResult {
   messageId: string;
   via: "smtp" | "resend";
+  /** The address it went out from. */
+  sender: string;
 }
 
 export async function mailReady(): Promise<{ ok: boolean; via: string | null; from: string | null }> {
@@ -56,10 +58,12 @@ export async function sendMail(opts: {
   body: string;
   leadId: string;
   inReplyTo?: string | null;
+  /** The mailbox to send from (each category has its own); defaults to the first connected one. */
+  from?: Mailbox | null;
 }): Promise<SendResult> {
   const s = await getSettings();
   const { text, html, unsub } = compose(opts.body, opts.leadId, s.physical_address);
-  const m = await mailbox();
+  const m = opts.from ?? (await mailbox());
   const domain = (m?.email ?? process.env.EMAIL_FROM ?? "nexgen.local").split("@").pop()!.replace(/>$/, "");
   const messageId = `<${randomBytes(12).toString("hex")}@${domain}>`;
   const headers: Record<string, string> = {
@@ -94,7 +98,7 @@ export async function sendMail(opts: {
       saveToSent(m, opts.to, opts.subject, text, html, messageId, headers, s.sender_name).catch(() => {}),
       new Promise((res) => setTimeout(res, 15_000)),
     ]);
-    return { messageId, via: "smtp" };
+    return { messageId, via: "smtp", sender: m.email.toLowerCase() };
   }
 
   const rk = await secret("RESEND_API_KEY");
@@ -115,7 +119,7 @@ export async function sendMail(opts: {
     signal: AbortSignal.timeout(20_000),
   });
   if (!r.ok) throw new Error(`Resend ${r.status}: ${(await r.text()).slice(0, 200)}`);
-  return { messageId, via: "resend" };
+  return { messageId, via: "resend", sender: from.toLowerCase() };
 }
 
 async function saveToSent(

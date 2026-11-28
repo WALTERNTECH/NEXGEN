@@ -173,17 +173,22 @@ export function LeadList({ leads, selectable = true, empty }: { leads: Lead[]; s
   };
 
   if (!leads.length) return <div className="empty">{empty ?? <b>No leads here yet</b>}</div>;
-  const plan = feed?.sendPlan;
+  const plans = (feed?.sendPlans ?? []).filter((p) => p.queued > 0);
 
   return (
     <>
-      {plan && plan.queued > 0 && (
+      {plans.length > 0 && (
         <div className="notice" style={{ marginBottom: 10 }}>
-          <b>
-            {plan.queued} email{plan.queued === 1 ? "" : "s"} queued
-          </b>{" "}
-          — next one goes out <b>{whenText(plan.nextAt)}</b>. {plan.why}. Warm-up day {plan.day}: {plan.perDay} per day, about one every {plan.spreadMin} minutes
-          ({plan.sentToday} sent in the last 24 h).
+          {plans.map((plan) => (
+            <div key={plan.email}>
+              <b>
+                {plan.queued} queued from {plan.email}
+              </b>{" "}
+              ({plan.categories.map((c) => CAT_LABEL[c as keyof typeof CAT_LABEL] ?? c).join(", ")}) — next one goes out <b>{whenText(plan.nextAt)}</b>. {plan.why}. Warm-up day{" "}
+              {plan.day}: up to {plan.perDay} a day, about one every {plan.spreadMin >= 60 ? `${+(plan.spreadMin / 60).toFixed(1)} h` : `${plan.spreadMin} min`} (
+              {plan.sentToday} sent in the last 24 h).
+            </div>
+          ))}
         </div>
       )}
       <div className="table-wrap">

@@ -3,7 +3,7 @@ import { q, one } from "@/lib/db";
 import { LEAD_COLS } from "@/lib/leads";
 import { splitFullName } from "@/lib/extract";
 import { queueEmail, processQueue, enrichPending, refreshDetails, findOwners, deleteLeads, type EmailKind } from "@/lib/pipeline";
-import { getSettings, getTemplate, type Category } from "@/lib/config";
+import { getSettings, getTemplate, mailboxFor, type Category } from "@/lib/config";
 import { render } from "@/lib/render";
 import { sendMail } from "@/lib/mailer";
 import { logRun } from "@/lib/runs";
@@ -142,7 +142,7 @@ export async function POST(req: Request, { params }: Ctx) {
   if (b.action === "reply") {
     const message = (b.message ?? "").trim();
     if (!message) return bad("Write a message first");
-    const lead = await one<{ direct_email: string | null; status: string }>(`select direct_email, status from leads where id = $1`, [id]);
+    const lead = await one<{ direct_email: string | null; status: string; category: Category }>(`select direct_email, status, category from leads where id = $1`, [id]);
     if (!lead?.direct_email) return bad("No email for this lead");
     if (lead.status === "unsubscribed") return bad("This lead unsubscribed");
     const last = await one<{ subject: string; message_id: string }>(
@@ -153,11 +153,13 @@ export async function POST(req: Request, { params }: Ctx) {
     const subject =
       (b.subject ?? "").trim() || (lastSubject ? (/^re:/i.test(lastSubject) ? lastSubject : `Re: ${lastSubject}`) : "Following up");
     try {
-      const r = await sendMail({ to: lead.direct_email, subject, body: message, leadId: id, inReplyTo: last?.message_id });
+      const from = await mailboxFor(lead.category);
+      if (!from) return bad("This category is assigned to a mailbox that isn't connected — see Settings → Mailbox");
+      const r = await sendMail({ to: lead.direct_email, subject, body: message, leadId: id, inReplyTo: last?.message_id, from });
       await q(
-        `insert into email_log (lead_id, kind, recipient_email, subject, body, status, origin, message_id, sent_at)
-         values ($1,'reply',$2,$3,$4,'sent','manual',$5,now())`,
-        [id, lead.direct_email, sealText(subject), sealText(message), r.messageId],
+        `insert into email_log (lead_id, kind, recipient_email, subject, body, status, origin, message_id, sent_at, sender_email)
+         values ($1,'reply',$2,$3,$4,'sent','manual',$5,now(),$6)`,
+        [id, lead.direct_email, sealText(subject), sealText(message), r.messageId, r.sender],
       );
       await q(`update leads set last_email_at = now(), unread_replies = 0, updated_at = now() where id = $1`, [id]);
       await q(`update replies set is_read = true where lead_id = $1`, [id]);

@@ -9,6 +9,9 @@ import {
   getTemplate,
   templateSaved,
   secret,
+  mailboxes,
+  mailboxRoutes,
+  categoriesFor,
   type Category,
 } from "./config";
 import { q, one, tx, lease, release } from "./db";
@@ -879,97 +882,125 @@ export async function queueEmail(leadId: string, kind: EmailKind, origin: "auto"
   }
 }
 
+/**
+ * Send what's queued. Every mailbox works through its own categories' queue (Tax → its mailbox, Debt → its mailbox…),
+ * each with its own domain check, warm-up allowance and spacing. One email per mailbox per run while warming up.
+ */
 export async function processQueue(max = 25): Promise<string> {
   const ready = await mailReady();
   if (!ready.ok) return "no mailbox";
   // Inbox placement guards (lib/deliverability.ts): paused after bounces, domain records, business hours, warm-up, human spacing.
   const paused = await sendPaused();
   if (paused) return `paused: ${paused.reason}`;
-  const s0 = await getSettings();
-  const dom = await currentCheck().catch(() => null);
-  if (dom && !dom.ready) {
-    await noteOnce("domain", `Sending held: ${dom.domain} is missing records that keep mail out of spam — see Settings → Mailbox`);
-    return "held: sender domain records missing";
-  }
-  // Emails you send one at a time from a lead go out right away; bulk and automatic ones keep to business hours and spacing.
-  const offHours = s0.us_business_hours && !inUsBusinessHours(new Date(), s0.send_weekends);
-  const manualOnly = offHours || !(await nextSendAllowed());
-  if (manualOnly && !(await one(`select 1 from email_log where status = 'queued' and origin = 'manual' limit 1`)))
-    return offHours ? "outside US business hours — queued emails wait" : "waiting for the next send slot";
   if (!(await lease("send", 280))) return "already sending";
+  const report: string[] = [];
   try {
     const s = await getSettings();
-    const warm = await warmupCap(s.daily_limit, s.warmup_gap_min);
     await q(`update email_log set status = 'failed', error = 'Interrupted — check Sent folder before retrying' where status = 'sending' and created_at < now() - interval '15 minutes'`);
-    let sent = 0;
-    const t0 = Date.now();
-    while (sent < max && Date.now() - t0 < 40_000) {
-      const st = await sentLast24h();
-      if ((st?.today ?? 0) >= warm.cap) {
-        if (sent === 0)
-          await noteOnce(
-            "cap",
-            warm.cap < s.daily_limit
-              ? `Warm-up day ${warm.day}: ${warm.cap} emails today (new mailboxes ramp up to your limit of ${s.daily_limit} to stay out of spam) — the rest stay queued`
-              : `Daily limit of ${s.daily_limit} reached — the rest stay queued`,
-          );
-        break;
+    // Emails you send one at a time from a lead go out right away; bulk and automatic ones keep to business hours and spacing.
+    const offHours = s.us_business_hours && !inUsBusinessHours(new Date(), s.send_weekends);
+    const boxes = await mailboxes();
+    // Categories assigned to a mailbox that isn't connected just wait (they never go out from another address).
+    const routes = await mailboxRoutes();
+    for (const c of CATEGORIES) {
+      const to = routes[c];
+      if (to && !boxes.some((m) => m.email.toLowerCase() === to)) {
+        const waiting = await one<{ n: number }>(`select count(*) as n from email_log e join leads l on l.id = e.lead_id where e.status = 'queued' and l.category = $1`, [c]);
+        if (Number(waiting?.n ?? 0)) report.push(`${CATEGORY_LABEL[c]}: waiting for ${to} to be connected`);
       }
-      if (!manualOnly && s.send_gap_min > 0 && st?.last && Date.now() - Date.parse(st.last) < s.send_gap_min * 60_000 - 5_000) break;
-      const job = await one<{ id: string; lead_id: string; kind: EmailKind; recipient_email: string }>(
-        `update email_log set status = 'sending' where id = (
-           select id from email_log where status = 'queued' ${manualOnly ? "and origin = 'manual'" : ""}
-           order by (origin = 'manual') desc, created_at limit 1 for update skip locked
-         ) and status = 'queued' returning id, lead_id, kind, recipient_email`,
-      );
-      if (!job) break;
-      const lead = await one<LeadRow & { followups_sent: number }>(`select * from leads where id = $1`, [job.lead_id]);
-      if (!lead || lead.status === "unsubscribed" || (job.kind === "initial" && lead.auto_email_sent)) {
-        await q(`update email_log set status = 'cancelled', error = $2 where id = $1`, [
-          job.id,
-          !lead ? "Lead removed" : lead.status === "unsubscribed" ? "Unsubscribed" : "Already contacted",
-        ]);
+    }
+    for (const m of boxes) {
+      const cats = await categoriesFor(m.email);
+      if (!cats.length) continue;
+      const dom = await currentCheck(m).catch(() => null);
+      if (dom && !dom.ready) {
+        await noteOnce(`domain:${m.email}`, `Sending from ${m.email} held: ${dom.domain} is missing records that keep mail out of spam — see Settings → Mailbox`);
+        report.push(`${m.email}: held (domain records)`);
         continue;
       }
-      const tpl = await getTemplate(job.kind, lead.category);
-      const subject = render(tpl.subject, lead, s);
-      const body = render(tpl.body, lead, s);
-      const thread =
-        job.kind === "followup"
-          ? (
-              await one<{ message_id: string }>(
-                `select message_id from email_log where lead_id = $1 and status = 'sent' and message_id is not null order by sent_at desc limit 1`,
-                [lead.id],
-              )
-            )?.message_id
-          : null;
-      try {
-        const r = await sendMail({ to: job.recipient_email, subject, body, leadId: lead.id, inReplyTo: thread });
-        await q(`update email_log set status = 'sent', sent_at = now(), subject = $2, body = $3, message_id = $4 where id = $1`, [job.id, sealText(subject), sealText(body), r.messageId]);
-        if (job.kind === "initial") {
-          await q(
-            `update leads set auto_email_sent = true, contacted_at = now(), last_email_at = now(),
-               status = case when status in ('replied','unsubscribed') then status else 'contacted' end, updated_at = now() where id = $1`,
-            [lead.id],
-          );
-        } else {
-          await q(`update leads set followups_sent = followups_sent + 1, last_email_at = now(), updated_at = now() where id = $1`, [lead.id]);
+      const manualOnly = offHours || !(await nextSendAllowed(m.email));
+      const warm = await warmupCap(s.daily_limit, s.warmup_gap_min, m.email);
+      let sent = 0;
+      const t0 = Date.now();
+      while (sent < max && Date.now() - t0 < 30_000) {
+        const st = await sentLast24h(m.email);
+        if (st.today >= warm.cap) {
+          if (sent === 0)
+            await noteOnce(
+              `cap:${m.email}`,
+              warm.warming
+                ? `${m.email} warm-up day ${warm.day}: ${warm.cap} emails today — the rest stay queued`
+                : `${m.email}: daily limit of ${warm.cap} reached — the rest stay queued`,
+            );
+          break;
         }
-        sent++;
-        // New domains: the day's allowance is spread evenly across US business hours.
-        await scheduleNextSend(Math.max(s.send_gap_min, warm.spreadMin));
-        await logRun("send", true, `${CATEGORY_LABEL[lead.category]} ${job.kind === "initial" ? "new-lead email" : "follow-up"} sent to ${job.recipient_email} (${lead.company_name})`, {
-          lead_id: lead.id,
-          log_id: job.id,
-        });
-      } catch (e) {
-        await q(`update email_log set status = 'failed', error = $2 where id = $1`, [job.id, (e as Error).message.slice(0, 400)]);
-        await logRun("send", false, `Sending to ${job.recipient_email} failed: ${(e as Error).message}`);
-        break;
+        const job = await one<{ id: string; lead_id: string; kind: EmailKind; recipient_email: string }>(
+          `update email_log set status = 'sending' where id = (
+             select e.id from email_log e join leads l on l.id = e.lead_id
+             where e.status = 'queued' and l.category = any($1) ${manualOnly ? "and e.origin = 'manual'" : ""}
+             order by (e.origin = 'manual') desc, e.created_at limit 1 for update of e skip locked
+           ) and status = 'queued' returning id, lead_id, kind, recipient_email`,
+          [cats],
+        );
+        if (!job) break;
+        const lead = await one<LeadRow & { followups_sent: number }>(`select * from leads where id = $1`, [job.lead_id]);
+        if (!lead || lead.status === "unsubscribed" || (job.kind === "initial" && lead.auto_email_sent)) {
+          await q(`update email_log set status = 'cancelled', error = $2 where id = $1`, [
+            job.id,
+            !lead ? "Lead removed" : lead.status === "unsubscribed" ? "Unsubscribed" : "Already contacted",
+          ]);
+          continue;
+        }
+        const tpl = await getTemplate(job.kind, lead.category);
+        const subject = render(tpl.subject, lead, s);
+        const body = render(tpl.body, lead, s);
+        const thread =
+          job.kind === "followup"
+            ? (
+                await one<{ message_id: string }>(
+                  `select message_id from email_log where lead_id = $1 and status = 'sent' and message_id is not null order by sent_at desc limit 1`,
+                  [lead.id],
+                )
+              )?.message_id
+            : null;
+        try {
+          const r = await sendMail({ to: job.recipient_email, subject, body, leadId: lead.id, inReplyTo: thread, from: m });
+          await q(`update email_log set status = 'sent', sent_at = now(), subject = $2, body = $3, message_id = $4, sender_email = $5 where id = $1`, [
+            job.id,
+            sealText(subject),
+            sealText(body),
+            r.messageId,
+            r.sender,
+          ]);
+          if (job.kind === "initial") {
+            await q(
+              `update leads set auto_email_sent = true, contacted_at = now(), last_email_at = now(),
+                 status = case when status in ('replied','unsubscribed') then status else 'contacted' end, updated_at = now() where id = $1`,
+              [lead.id],
+            );
+          } else {
+            await q(`update leads set followups_sent = followups_sent + 1, last_email_at = now(), updated_at = now() where id = $1`, [lead.id]);
+          }
+          sent++;
+          // Warm-up: one email every `warmup_gap_min` minutes per mailbox; afterwards the daily limit spread across the day.
+          if (!manualOnly) await scheduleNextSend(Math.max(s.send_gap_min, warm.spreadMin), m.email);
+          await logRun(
+            "send",
+            true,
+            `${CATEGORY_LABEL[lead.category]} ${job.kind === "initial" ? "new-lead email" : "follow-up"} sent from ${m.email} to ${job.recipient_email} (${lead.company_name})`,
+            { lead_id: lead.id, log_id: job.id },
+          );
+        } catch (e) {
+          await q(`update email_log set status = 'failed', error = $2 where id = $1`, [job.id, (e as Error).message.slice(0, 400)]);
+          await logRun("send", false, `Sending from ${m.email} to ${job.recipient_email} failed: ${(e as Error).message}`);
+          break;
+        }
+        // Spaced sending: one per mailbox per run (manual single sends can go together).
+        if (!manualOnly) break;
       }
-      if (s.send_gap_min > 0) break;
+      if (sent) report.push(`${m.email}: ${sent} sent`);
     }
-    return `${sent} sent`;
+    return report.join("; ") || (offHours ? "outside US business hours — queued emails wait" : "nothing due");
   } finally {
     await release("send");
   }

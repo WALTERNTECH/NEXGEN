@@ -4,6 +4,8 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { api, type Lead, type Category } from "./util";
 
 export interface SendPlan {
+  email: string;
+  categories: string[];
   queued: number;
   nextAt: string | null;
   why: string;
@@ -23,7 +25,7 @@ export function whenText(iso: string | null) {
 }
 
 export interface Feed {
-  sendPlan?: SendPlan | null;
+  sendPlans?: SendPlan[];
   now: string;
   leads: Lead[];
   stats: {

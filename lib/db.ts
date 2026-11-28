@@ -210,6 +210,8 @@ alter table leads add column if not exists biz_state text;
 alter table leads add column if not exists biz_city text;
 alter table leads add column if not exists biz_address text;
 alter table leads add column if not exists research_claimed_at timestamptz;
+alter table email_log add column if not exists sender_email text;
+create index if not exists email_log_sender_idx on email_log (sender_email, sent_at);
 create index if not exists leads_research_queue_idx on leads (status, research_claimed_at) where direct_email is null;
 alter table leads add column if not exists owner_lookup_note text;
 create index if not exists leads_category_idx on leads (category, created_at desc);

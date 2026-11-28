@@ -59,7 +59,7 @@ export async function GET() {
   if (!lastTick || Date.now() - Date.parse(lastTick) > 75_000) after(() => tick().catch(() => {}));
   return json({
     build: process.env.NEXT_PUBLIC_BUILD_STAMP ?? null,
-    sendPlan: await (await import("@/lib/deliverability")).sendPlan().catch(() => null),
+    sendPlans: await (await import("@/lib/deliverability")).sendPlans().catch(() => []),
     now: new Date().toISOString(),
     leads,
     stats: { ...stats, ...queue, unread_replies: unread?.n ?? 0 },

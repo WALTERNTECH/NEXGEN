@@ -1,4 +1,4 @@
-import { getTemplate, saveTemplate, getSettings, CATEGORIES, DEFAULT_TEMPLATES, type Category, type TemplateKind } from "@/lib/config";
+import { getTemplate, saveTemplate, getSettings, mailboxFor, CATEGORIES, DEFAULT_TEMPLATES, type Category, type TemplateKind } from "@/lib/config";
 import { PLACEHOLDERS, unknownTokens, resolveKey, render, type RenderLead } from "@/lib/render";
 import { sendMail, mailReady } from "@/lib/mailer";
 import { logRun } from "@/lib/runs";
@@ -36,6 +36,9 @@ export async function POST(req: Request) {
   const problem = check(subject) ?? check(text);
   if (problem) return bad(problem);
   if (!(await mailReady()).ok) return bad("Connect a mailbox in Settings first");
+  // Tests go out from the mailbox this category sends from.
+  const from = await mailboxFor(b.category);
+  if (!from) return bad("This category is assigned to a mailbox that isn't connected yet — see Settings → Mailbox");
   const s = await getSettings();
   try {
     await sendMail({
@@ -43,11 +46,12 @@ export async function POST(req: Request) {
       subject: render(subject, SAMPLE[b.category], s.sender_name),
       body: render(text, SAMPLE[b.category], s.sender_name),
       leadId: "00000000-0000-0000-0000-000000000000",
+      from,
     });
   } catch (e) {
     return bad(`Sending failed: ${(e as Error).message}`);
   }
-  await logRun("send", true, `Test email (${b.category}) sent to ${to}`);
+  await logRun("send", true, `Test email (${b.category}) sent from ${from.email} to ${to}`);
   return json({ ok: true });
 }
 
