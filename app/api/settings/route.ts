@@ -47,10 +47,10 @@ async function view() {
       ? {
           check: await currentCheck().catch(() => null),
           paused: await sendPaused(),
-          warmup: await warmupCap((await getSettings()).daily_limit),
+          warmup: await warmupCap((await getSettings()).daily_limit, (await getSettings()).warmup_gap_min),
           plan: await sendPlan(),
           steps: WARMUP,
-          business_hours_now: inUsBusinessHours(),
+          business_hours_now: inUsBusinessHours(new Date(), (await getSettings()).send_weekends),
         }
       : null,
     webhook: webhookUrl() ? webhookUrl()!.replace(/token=.*/, "token=•••") : null,

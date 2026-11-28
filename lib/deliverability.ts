@@ -114,7 +114,7 @@ export const WINDOW_MIN = 540;
  * Today's allowance for the connected mailbox. The count restarts when a new mailbox is connected
  * (settings "mailbox_since"), because a new domain has no reputation yet.
  */
-export async function warmupCap(dailyLimit: number): Promise<{ cap: number; day: number; spreadMin: number }> {
+export async function warmupCap(dailyLimit: number, warmupGapMin = 120): Promise<{ cap: number; day: number; spreadMin: number; warming: boolean }> {
   let since = await getSetting<string>("mailbox_since");
   if (!since) {
     const r = await one<{ first: string | null }>(`select min(sent_at) as first from email_log where status = 'sent' and kind <> 'reply'`);
@@ -122,9 +122,14 @@ export async function warmupCap(dailyLimit: number): Promise<{ cap: number; day:
   }
   const day = Math.floor((Date.now() - Date.parse(since)) / 86_400_000) + 1;
   const step = WARMUP.find((w) => day <= w.upToDay);
-  const cap = Math.max(1, Math.min(dailyLimit, step ? step.perDay : dailyLimit));
-  // Spread the day's emails evenly across the business window.
-  return { cap, day, spreadMin: Math.round(WINDOW_MIN / cap) };
+  if (step) {
+    // While warming up: one email every `warmupGapMin` minutes (your choice), and no more than fit in the day.
+    const cap = Math.max(1, Math.min(dailyLimit, step.perDay, Math.floor(WINDOW_MIN / warmupGapMin) + 1));
+    return { cap, day, spreadMin: warmupGapMin, warming: true };
+  }
+  // After warm-up: the daily limit, spread evenly across the business window.
+  const cap = Math.max(1, dailyLimit);
+  return { cap, day, spreadMin: Math.round(WINDOW_MIN / cap), warming: false };
 }
 
 /** Emails that count toward today's allowance (tests to your own address don't). */
@@ -137,8 +142,8 @@ export async function sentLast24h(): Promise<{ today: number; last: string | nul
 }
 
 /** The next moment inside the US business window (checked in 5-minute steps, up to 4 days ahead). */
-export function nextWindowStart(from = new Date()): Date {
-  for (let t = from.getTime(), end = t + 4 * 86_400_000; t < end; t += 5 * 60_000) if (inUsBusinessHours(new Date(t))) return new Date(t);
+export function nextWindowStart(from = new Date(), weekends = true): Date {
+  for (let t = from.getTime(), end = t + 4 * 86_400_000; t < end; t += 5 * 60_000) if (inUsBusinessHours(new Date(t), weekends)) return new Date(t);
   return from;
 }
 
@@ -146,7 +151,7 @@ export function nextWindowStart(from = new Date()): Date {
 export async function sendPlan(): Promise<{ queued: number; nextAt: string | null; why: string; day: number; perDay: number; spreadMin: number; sentToday: number }> {
   const s = (await import("./config")).getSettings;
   const settings = await s();
-  const warm = await warmupCap(settings.daily_limit);
+  const warm = await warmupCap(settings.daily_limit, settings.warmup_gap_min);
   const q0 = await one<{ n: number }>(`select count(*) as n from email_log where status = 'queued'`);
   const queued = Number(q0?.n ?? 0);
   const st = await sentLast24h();
@@ -157,10 +162,15 @@ export async function sendPlan(): Promise<{ queued: number; nextAt: string | nul
   const dom = await getSetting<DomainCheck>("deliverability");
   if (dom && !dom.ready) return { ...base, nextAt: null, why: `Held until ${dom.domain}'s mail records are fixed` };
   const now = new Date();
-  if (settings.us_business_hours && !inUsBusinessHours(now)) return { ...base, nextAt: nextWindowStart(now).toISOString(), why: "Waiting for US business hours (weekdays 8 am – 5 pm Eastern)" };
+  if (settings.us_business_hours && !inUsBusinessHours(now, settings.send_weekends))
+    return {
+      ...base,
+      nextAt: nextWindowStart(now, settings.send_weekends).toISOString(),
+      why: `Waiting for US business hours (${settings.send_weekends ? "every day" : "weekdays"} 8 am – 5 pm Eastern)`,
+    };
   if (st.today >= warm.cap) {
     const after = new Date(Date.parse(st.last ?? now.toISOString()) + 86_400_000);
-    return { ...base, nextAt: (settings.us_business_hours ? nextWindowStart(after) : after).toISOString(), why: `Today's warm-up allowance (${warm.cap}) is used` };
+    return { ...base, nextAt: (settings.us_business_hours ? nextWindowStart(after, settings.send_weekends) : after).toISOString(), why: `Today's allowance (${warm.cap}) is used` };
   }
   const at = await getSetting<string>("next_send_at");
   if (at && Date.parse(at) > now.getTime()) return { ...base, nextAt: at, why: `Spacing emails about ${warm.spreadMin} minutes apart` };
@@ -168,11 +178,11 @@ export async function sendPlan(): Promise<{ queued: number; nextAt: string | nul
 }
 
 /** US weekdays, 8 am – 5 pm Eastern (5 am – 2 pm Pacific): when owners read email and the send looks like a person's. */
-export function inUsBusinessHours(d = new Date()) {
+export function inUsBusinessHours(d = new Date(), weekends = true) {
   const p = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", weekday: "short", hour: "numeric", hour12: false }).formatToParts(d);
   const wd = p.find((x) => x.type === "weekday")?.value ?? "";
   const h = Number(p.find((x) => x.type === "hour")?.value ?? 0) % 24;
-  return !["Sat", "Sun"].includes(wd) && h >= 8 && h < 17;
+  return (weekends || !["Sat", "Sun"].includes(wd)) && h >= 8 && h < 17;
 }
 
 /** Spacing between emails: the gap you set plus up to 60% random extra, so sends don't arrive like a machine's. */
@@ -182,7 +192,8 @@ export async function nextSendAllowed(): Promise<boolean> {
 }
 export async function scheduleNextSend(gapMin: number) {
   // ±25% so the sends don't arrive on a fixed beat.
-  const ms = Math.max(1, gapMin) * 60_000 * (0.75 + Math.random() * 0.5);
+  // ±10% so the sends don't arrive on an exact beat.
+  const ms = Math.max(1, gapMin) * 60_000 * (0.9 + Math.random() * 0.2);
   await setSetting("next_send_at", new Date(Date.now() + ms).toISOString());
 }
 

@@ -29,6 +29,10 @@ export interface Settings {
   find_phones: boolean;
   /** Send only on US weekdays, 8 am – 5 pm Eastern (better inbox placement and replies). */
   us_business_hours: boolean;
+  /** Also send on Saturdays and Sundays (same hours). */
+  send_weekends: boolean;
+  /** Warm-up pace: minutes between emails while a new mailbox warms up. */
+  warmup_gap_min: number;
   /** Research backfill leads automatically too (emails only), until BetterContact credits run out. */
   enrich_backfill: boolean;
   /** Individuals (not companies) in tax/debt suits are kept only when the amount owed is at least this much. */
@@ -68,6 +72,8 @@ export const DEFAULT_SETTINGS: Settings = {
   auto_followup_days: 0,
   find_phones: false,
   us_business_hours: true,
+  send_weekends: true,
+  warmup_gap_min: 120,
   enrich_backfill: true,
   individual_min_amount: 5000,
   source_cdtfa: true,
@@ -126,6 +132,8 @@ export async function saveSettings(patch: Partial<Settings>) {
   next.source_sba = Boolean(next.source_sba);
   next.find_phones = Boolean(next.find_phones);
   next.us_business_hours = next.us_business_hours !== false;
+  next.send_weekends = next.send_weekends !== false;
+  next.warmup_gap_min = Math.min(600, Math.max(5, Math.round(Number(next.warmup_gap_min)) || 120));
   next.enrich_backfill = Boolean(next.enrich_backfill);
   await setSetting("app", next);
   return next;

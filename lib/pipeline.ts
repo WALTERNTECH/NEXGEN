@@ -892,14 +892,14 @@ export async function processQueue(max = 25): Promise<string> {
     return "held: sender domain records missing";
   }
   // Emails you send one at a time from a lead go out right away; bulk and automatic ones keep to business hours and spacing.
-  const offHours = s0.us_business_hours && !inUsBusinessHours();
+  const offHours = s0.us_business_hours && !inUsBusinessHours(new Date(), s0.send_weekends);
   const manualOnly = offHours || !(await nextSendAllowed());
   if (manualOnly && !(await one(`select 1 from email_log where status = 'queued' and origin = 'manual' limit 1`)))
     return offHours ? "outside US business hours — queued emails wait" : "waiting for the next send slot";
   if (!(await lease("send", 280))) return "already sending";
   try {
     const s = await getSettings();
-    const warm = await warmupCap(s.daily_limit);
+    const warm = await warmupCap(s.daily_limit, s.warmup_gap_min);
     await q(`update email_log set status = 'failed', error = 'Interrupted — check Sent folder before retrying' where status = 'sending' and created_at < now() - interval '15 minutes'`);
     let sent = 0;
     const t0 = Date.now();

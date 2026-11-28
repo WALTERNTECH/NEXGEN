@@ -11,6 +11,8 @@ interface View {
     lookback_days: number;
     find_phones: boolean;
     us_business_hours: boolean;
+    send_weekends: boolean;
+    warmup_gap_min: number;
     daily_limit: number;
     send_gap_min: number;
     enrich_backfill: boolean;
@@ -295,15 +297,42 @@ export default function SettingsPage() {
                     </>
                   )}
                   <div className="small">
-                    <b>Warm-up day {d.warmup.day}</b> for this mailbox: up to <b>{d.warmup.cap}</b> emails per day, spread across the US business day — about one every{" "}
-                    <b>{d.warmup.spreadMin} minutes</b> (±25% at random). Schedule:{" "}
-                    {d.steps.map((w, i) => `days ${i ? d.steps[i - 1].upToDay + 1 : 1}–${w.upToDay}: ${Math.min(w.perDay, v.settings.daily_limit)}/day`).join(" · ")} · then your
-                    limit of {v.settings.daily_limit}/day. {d.plan.queued > 0 && <>Queued: <b>{d.plan.queued}</b>, next {whenText(d.plan.nextAt)} — {d.plan.why}.</>} Plain text, no tracking,
+                    <b>Warm-up day {d.warmup.day}</b> for this mailbox: one email about every <b>{d.warmup.spreadMin >= 60 ? `${+(d.warmup.spreadMin / 60).toFixed(1)} hours` : `${d.warmup.spreadMin} minutes`}</b>{" "}
+                    (±10%), up to <b>{d.warmup.cap}</b> today. After the 21-day warm-up: your limit of {v.settings.daily_limit}/day, spread across the day. {d.plan.queued > 0 && <>Queued: <b>{d.plan.queued}</b>, next {whenText(d.plan.nextAt)} — {d.plan.why}.</>} Plain text, no tracking,
                     one-click unsubscribe; bounced addresses are never emailed again and sending pauses itself if more than 5% bounce.
                   </div>
                   <div className="row" style={{ justifyContent: "space-between", gap: 10 }}>
+                    <label className="small" htmlFor="wgap">
+                      Warm-up pace: one email every
+                    </label>
+                    <select
+                      id="wgap"
+                      className="input"
+                      style={{ width: 150 }}
+                      value={v.settings.warmup_gap_min}
+                      onChange={(e) =>
+                        run("pace", () => api("/api/settings", { method: "PUT", json: { settings: { warmup_gap_min: Number(e.target.value) } } }), "Warm-up pace saved")
+                      }
+                    >
+                      {[30, 45, 60, 90, 120, 180, 240].map((m) => (
+                        <option key={m} value={m}>
+                          {m < 60 ? `${m} minutes` : `${m / 60} hour${m === 60 ? "" : "s"}`}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="row" style={{ justifyContent: "space-between", gap: 10 }}>
+                    <span className="small">Send on Saturdays and Sundays too</span>
+                    <button
+                      className={`switch ${v.settings.send_weekends ? "on" : ""}`}
+                      aria-pressed={v.settings.send_weekends}
+                      aria-label="Send on weekends"
+                      onClick={() => run("wkend", () => api("/api/settings", { method: "PUT", json: { settings: { send_weekends: !v.settings.send_weekends } } }), v.settings.send_weekends ? "Weekdays only" : "Weekends on")}
+                    />
+                  </div>
+                  <div className="row" style={{ justifyContent: "space-between", gap: 10 }}>
                     <span className="small">
-                      Send only on US weekdays, 8 am – 5 pm Eastern {v.settings.us_business_hours ? (d.business_hours_now ? "· sending now" : "· queued emails wait until then") : ""}
+                      Send only 8 am – 5 pm US Eastern {v.settings.us_business_hours ? (d.business_hours_now ? "· sending now" : "· queued emails wait until then") : ""}
                     </span>
                     <button
                       className={`switch ${v.settings.us_business_hours ? "on" : ""}`}
