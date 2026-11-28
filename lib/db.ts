@@ -216,6 +216,23 @@ create index if not exists leads_category_idx on leads (category, created_at des
 -- Update D: a lead can receive the new-lead email once, and an address can receive it once.
 create unique index if not exists email_log_initial_lead_once on email_log (lead_id) where kind = 'initial';
 
+-- Deleting a lead: its case is remembered so imports don't bring it back (and research credits aren't spent on it again),
+-- and an address that already got an email stays blocked, so deleting never opens the door to a second email.
+create table if not exists deleted_leads (external_case_id text primary key, company_name text, deleted_at timestamptz not null default now());
+create table if not exists suppressed_emails (email text primary key, reason text, created_at timestamptz not null default now());
+do $$ begin
+  if not exists (select 1 from pg_proc where proname = 'leads_skip_deleted') then
+    create function leads_skip_deleted() returns trigger language plpgsql as $f$
+    begin
+      if exists (select 1 from deleted_leads where external_case_id = new.external_case_id) then return null; end if;
+      return new;
+    end $f$;
+  end if;
+  if not exists (select 1 from pg_trigger where tgname = 'leads_skip_deleted') then
+    create trigger leads_skip_deleted before insert on leads for each row execute function leads_skip_deleted();
+  end if;
+end $$;
+
 create table if not exists cl_budget (bucket text primary key, minute timestamptz not null, used int not null default 0);
 alter table cl_budget enable row level security;
 

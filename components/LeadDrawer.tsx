@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useFeed } from "./feed";
-import { IX, IMail, IPhone, IWhatsApp, ILinkedIn, IExternal, IUserSearch, IReply } from "./icons";
+import { IX, IMail, IPhone, IWhatsApp, ILinkedIn, IExternal, IUserSearch, IReply, ITrash } from "./icons";
 import { api, CAT_COLOR, CAT_LABEL, CAT_NAME, contactState, daysSince, fmtDate, fmtTime, prettyPhone, telHref, usd, waNumber, type Lead } from "./util";
 
 interface EmailRow {
@@ -141,6 +141,24 @@ export function LeadDrawer({ id, onClose }: { id: string; onClose: () => void })
               {days !== null ? ` · ${days} day${days === 1 ? "" : "s"} in distress` : ""}
             </div>
           </div>
+          <button
+            className="iconbtn del"
+            title="Delete lead"
+            aria-label={`Delete ${l.company_name}`}
+            onClick={async () => {
+              if (!confirm(`Delete ${l.company_name}? It disappears from NEXGEN for good${l.auto_email_sent ? " and its address stays blocked from further emails" : ""}.`)) return;
+              try {
+                await api(`/api/leads/${l.id}`, { method: "DELETE" });
+                toast(`${l.company_name} deleted`);
+                refresh();
+                onClose();
+              } catch (e) {
+                toast((e as Error).message, true);
+              }
+            }}
+          >
+            <ITrash />
+          </button>
           <button className="iconbtn" onClick={onClose} aria-label="Close">
             <IX />
           </button>

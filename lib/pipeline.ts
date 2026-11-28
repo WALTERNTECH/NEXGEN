@@ -861,6 +861,8 @@ export async function queueEmail(leadId: string, kind: EmailKind, origin: "auto"
       const lead = (await t.query<LeadRow>(`select * from leads where id = $1 for update`, [leadId])).rows[0];
       if (!lead || !lead.direct_email) return { ok: false, reason: "No verified email" };
       if (lead.email_status === "bounced") return { ok: false, reason: "Email bounced" };
+      if (await t.query(`select 1 from suppressed_emails where email = $1`, [lead.direct_email.toLowerCase()]).then((r) => r.rows.length))
+        return { ok: false, reason: "Already emailed (deleted lead)" };
       if (lead.status === "unsubscribed") return { ok: false, reason: "Unsubscribed" };
       if (kind === "initial" && lead.auto_email_sent) return { ok: false, reason: "Already contacted" };
       if (kind === "followup" && !lead.auto_email_sent) return { ok: false, reason: "Send the new-lead email first" };
@@ -884,13 +886,16 @@ export async function processQueue(max = 25): Promise<string> {
   const paused = await sendPaused();
   if (paused) return `paused: ${paused.reason}`;
   const s0 = await getSettings();
-  if (s0.us_business_hours && !inUsBusinessHours()) return "outside US business hours — queued emails wait";
   const dom = await currentCheck().catch(() => null);
   if (dom && !dom.ready) {
     await noteOnce("domain", `Sending held: ${dom.domain} is missing records that keep mail out of spam — see Settings → Mailbox`);
     return "held: sender domain records missing";
   }
-  if (!(await nextSendAllowed())) return "waiting for the next send slot";
+  // Emails you send one at a time from a lead go out right away; bulk and automatic ones keep to business hours and spacing.
+  const offHours = s0.us_business_hours && !inUsBusinessHours();
+  const manualOnly = offHours || !(await nextSendAllowed());
+  if (manualOnly && !(await one(`select 1 from email_log where status = 'queued' and origin = 'manual' limit 1`)))
+    return offHours ? "outside US business hours — queued emails wait" : "waiting for the next send slot";
   if (!(await lease("send", 280))) return "already sending";
   try {
     const s = await getSettings();
@@ -912,10 +917,11 @@ export async function processQueue(max = 25): Promise<string> {
           );
         break;
       }
-      if (s.send_gap_min > 0 && st?.last && Date.now() - Date.parse(st.last) < s.send_gap_min * 60_000 - 5_000) break;
+      if (!manualOnly && s.send_gap_min > 0 && st?.last && Date.now() - Date.parse(st.last) < s.send_gap_min * 60_000 - 5_000) break;
       const job = await one<{ id: string; lead_id: string; kind: EmailKind; recipient_email: string }>(
         `update email_log set status = 'sending' where id = (
-           select id from email_log where status = 'queued' order by created_at limit 1 for update skip locked
+           select id from email_log where status = 'queued' ${manualOnly ? "and origin = 'manual'" : ""}
+           order by (origin = 'manual') desc, created_at limit 1 for update skip locked
          ) and status = 'queued' returning id, lead_id, kind, recipient_email`,
       );
       if (!job) break;
@@ -976,6 +982,31 @@ async function noteOnce(key: string, msg: string) {
   if ((await getSetting<string>(k)) === day) return;
   await setSetting(k, day);
   await logRun("send", true, msg);
+}
+
+/**
+ * Delete leads for good. The case is remembered so imports don't bring it back, and any address that already
+ * received an email stays blocked — deleting never allows a second email. Test leads are simply removed.
+ */
+export async function deleteLeads(ids: string[]): Promise<number> {
+  if (!ids.length) return 0;
+  return tx(async (t) => {
+    await t.query(
+      `insert into deleted_leads (external_case_id, company_name)
+       select external_case_id, company_name from leads where id = any($1) and source <> 'test' and external_case_id is not null
+       on conflict do nothing`,
+      [ids],
+    );
+    await t.query(
+      `insert into suppressed_emails (email, reason)
+       select distinct e.recipient_email, 'emailed before the lead was deleted' from email_log e join leads l on l.id = e.lead_id
+       where e.lead_id = any($1) and l.source <> 'test' and e.status in ('sent','sending','bounced')
+       on conflict do nothing`,
+      [ids],
+    );
+    const r = await t.query(`delete from leads where id = any($1) returning id`, [ids]);
+    return r.rows.length;
+  });
 }
 
 /** Update D: categories with Auto-Send on (and a saved template) email every eligible enriched lead in that category, once. */

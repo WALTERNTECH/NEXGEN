@@ -89,6 +89,14 @@ export function ILinkedIn(p: P) {
     </svg>
   );
 }
+export const ITrash = base(
+  <>
+    <path d="M3 6h18" />
+    <path d="M8 6V4h8v2" />
+    <path d="M19 6l-1 14H6L5 6" />
+    <path d="M10 11v6M14 11v6" />
+  </>,
+);
 export const IX = base(<path d="M18 6 6 18M6 6l12 12" />);
 export const ICheck = base(<path d="M20 6 9 17l-5-5" />);
 export const IExternal = base(

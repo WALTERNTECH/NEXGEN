@@ -94,7 +94,8 @@ const noParens = (s: string | null | undefined) => (s ?? "").replace(/\s*\(.*$/,
 
 /** One phrase that says exactly what happened to this lead, worded for where the lead came from. */
 function matter(l: RenderLead): { matter: string; owedTo: string; agency: string } {
-  const src = l.source ?? "courtlistener";
+  // A test lead reads like a state tax-list lead.
+  const src = l.source === "test" ? "tax_test" : (l.source ?? "courtlistener");
   const filed = longDate(l.filing_date);
   const on = filed ? ` on ${filed}` : "";
   const ref = l.case_number ? ` (case ${l.case_number})` : "";

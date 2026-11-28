@@ -1,6 +1,6 @@
 import { after } from "next/server";
 import { q } from "@/lib/db";
-import { queueEmail, processQueue, enrichPending, type EmailKind } from "@/lib/pipeline";
+import { queueEmail, processQueue, enrichPending, deleteLeads, type EmailKind } from "@/lib/pipeline";
 import { getSettings, getTemplate, type Category } from "@/lib/config";
 import { render, missingFor } from "@/lib/render";
 import type { LeadVars } from "@/lib/mailer";
@@ -72,8 +72,7 @@ export async function POST(req: Request) {
     return json({ ok: true });
   }
   if (b.action === "delete") {
-    await q(`delete from leads where id = any($1)`, [ids]);
-    return json({ ok: true });
+    return json({ ok: true, deleted: await deleteLeads(ids) });
   }
   return bad("Unknown action");
 }

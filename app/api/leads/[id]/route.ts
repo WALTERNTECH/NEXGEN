@@ -2,7 +2,7 @@ import { after } from "next/server";
 import { q, one } from "@/lib/db";
 import { LEAD_COLS } from "@/lib/leads";
 import { splitFullName } from "@/lib/extract";
-import { queueEmail, processQueue, enrichPending, refreshDetails, findOwners, type EmailKind } from "@/lib/pipeline";
+import { queueEmail, processQueue, enrichPending, refreshDetails, findOwners, deleteLeads, type EmailKind } from "@/lib/pipeline";
 import { getSettings, getTemplate, type Category } from "@/lib/config";
 import { render } from "@/lib/render";
 import { sendMail } from "@/lib/mailer";
@@ -41,6 +41,16 @@ export async function GET(_: Request, { params }: Ctx) {
   await q(`update leads set seen_at = coalesce(seen_at, now()) where id = $1`, [id]);
   const d = await detail(id);
   return d ? json(d) : bad("not found", 404);
+}
+
+export async function DELETE(_: Request, { params }: Ctx) {
+  const { id } = await params;
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return bad("not found", 404);
+  const lead = await one<{ company_name: string }>(`select company_name from leads where id = $1`, [id]);
+  if (!lead) return bad("not found", 404);
+  await deleteLeads([id]);
+  await logRun("system", true, `Lead deleted: ${lead.company_name}`);
+  return json({ ok: true });
 }
 
 export async function PATCH(req: Request, { params }: Ctx) {

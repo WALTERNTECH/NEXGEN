@@ -2,13 +2,23 @@
 
 import { useMemo, useState } from "react";
 import { useFeed } from "./feed";
-import { IMail, IPhone, IWhatsApp, IDetails } from "./icons";
+import { IMail, IPhone, IWhatsApp, IDetails, ITrash } from "./icons";
 import { api, CAT_COLOR, CAT_LABEL, contactState, daysSince, fmtDate, isNew, prettyPhone, telHref, usd, waNumber, type Lead } from "./util";
 
 /** Update C: Send / Preview email, Call direct, WhatsApp, Open full case details. */
 export function ContactButtons({ l }: { l: Lead }) {
-  const { openLead } = useFeed();
+  const { openLead, toast, refresh } = useFeed();
   const stop = (e: React.MouseEvent) => e.stopPropagation();
+  const remove = async () => {
+    if (!confirm(`Delete ${l.company_name}? It disappears from NEXGEN for good${l.auto_email_sent ? " and its address stays blocked from further emails" : ""}.`)) return;
+    try {
+      await api(`/api/leads/${l.id}`, { method: "DELETE" });
+      toast(`${l.company_name} deleted`);
+      refresh();
+    } catch (e) {
+      toast((e as Error).message, true);
+    }
+  };
   return (
     <div className="acts" onClick={stop}>
       <button
@@ -34,6 +44,9 @@ export function ContactButtons({ l }: { l: Lead }) {
       </a>
       <button className="act" onClick={() => openLead(l.id, "details")} title="Full case details" aria-label="Full case details">
         <IDetails />
+      </button>
+      <button className="act del" onClick={remove} title="Delete lead" aria-label={`Delete ${l.company_name}`}>
+        <ITrash />
       </button>
     </div>
   );
