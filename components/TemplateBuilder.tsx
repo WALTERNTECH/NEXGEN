@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useFeed } from "./feed";
 import { api, CAT_LABEL, CAT_NAME, type Category, type Lead } from "./util";
-import { FIELDS, render, rawVars, missingFor } from "@/lib/render";
+import { FIELDS, render, rawVars, missingFor, unknownTokens } from "@/lib/render";
 
 type Kind = "initial" | "followup";
 interface Tpl {
@@ -28,6 +28,12 @@ export function TemplateBuilder({ category, compact = false }: { category: Categ
   const [kind, setKind] = useState<Kind>("initial");
   const [draft, setDraft] = useState<Record<Kind, { subject: string; body: string }> | null>(null);
   const [saving, setSaving] = useState(false);
+  const [testTo, setTestTo] = useState("info@kryptoninvestments.online");
+  const [testing, setTesting] = useState(false);
+  useEffect(() => {
+    const v = localStorage.getItem("nx_test_to");
+    if (v) setTestTo(v);
+  }, []);
   const bodyRef = useRef<HTMLTextAreaElement>(null);
   const subjRef = useRef<HTMLInputElement>(null);
   const lastFocus = useRef<"subject" | "body">("body");
@@ -109,6 +115,20 @@ export function TemplateBuilder({ category, compact = false }: { category: Categ
     }
   };
 
+  // A test goes to your own address, filled with made-up sample details — never a real lead.
+  const sendTest = async () => {
+    setTesting(true);
+    try {
+      localStorage.setItem("nx_test_to", testTo);
+      await api("/api/templates", { method: "POST", json: { category, subject: cur.subject, body: cur.body, to: testTo } });
+      toast(`Test sent to ${testTo} — filled with sample details`);
+    } catch (e) {
+      toast((e as Error).message, true);
+    } finally {
+      setTesting(false);
+    }
+  };
+
   const toggleAuto = async () => {
     try {
       await api("/api/settings", { method: "PUT", json: { settings: { categories: { [category]: { auto_send: !auto } } } } });
@@ -148,8 +168,8 @@ export function TemplateBuilder({ category, compact = false }: { category: Categ
             </button>
           </div>
           <p className="small" style={{ margin: 0 }}>
-            Write the email once. When it goes out, every detail below is filled in from <b>that lead&apos;s own record</b> — its name, company, amount, agency or court, date and case number — so each lead gets an email about its own case.
-            Tap a detail to put it where your cursor is.
+            Write the email once and put a placeholder like <code>{"{{company_name}}"}</code> wherever a lead&apos;s own detail should go. When each email is sent, NEXGEN swaps every
+            placeholder for <b>that lead&apos;s exact value</b> — nothing else in your text is read or changed. Tap a detail to insert it at your cursor, or type it yourself.
           </p>
           <div className="vars">
             {FIELDS.filter((f) => !f.cats || f.cats.includes(category)).map((f) => {
@@ -158,11 +178,11 @@ export function TemplateBuilder({ category, compact = false }: { category: Categ
                 <button
                   key={f.key}
                   className="var"
-                  title={`{{${f.key}}}${val ? ` — e.g. ${val}` : ""}`}
+                  title={`${f.label}${val ? ` — e.g. ${val}` : ""}`}
                   onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => insert(f.key)}
+                  onClick={() => insert(f.token)}
                 >
-                  {f.label}
+                  <span className="var-l">{f.label}</span> <code>{`{{${f.token}}}`}</code>
                 </button>
               );
             })}
@@ -193,6 +213,49 @@ export function TemplateBuilder({ category, compact = false }: { category: Categ
               onChange={(e) => setDraft({ ...draft, [kind]: { ...cur, body: e.target.value } })}
             />
           </div>
+          {(() => {
+            const unknown = [...new Set([...unknownTokens(cur.subject), ...unknownTokens(cur.body)])];
+            return unknown.length ? (
+              <div className="notice">
+                Not recognised: <b>{unknown.join(", ")}</b> — these would stay as typed. Use a placeholder from the list above (capitals and spaces don&apos;t matter).
+              </div>
+            ) : null;
+          })()}
+          {!saved && (
+            <div className="notice">
+              <b>Not saved.</b> Emails use only the <b>saved</b> version{t[kind].saved ? "" : " — nothing is saved yet, so NEXGEN's starting draft is used"}. Press Save when you&apos;re done.
+            </div>
+          )}
+          <details className="guide">
+            <summary>Placeholder guide — every detail NEXGEN can fill in</summary>
+            <p className="small">
+              Type a placeholder in double curly braces. Capitals, spaces and dashes don&apos;t matter: <code>{"{{Company Name}}"}</code> works the same as{" "}
+              <code>{"{{company_name}}"}</code>. Wrap a sentence in <code>[[ ]]</code> to drop it for leads that don&apos;t have that detail, e.g.{" "}
+              <code>{"[[The balance is {{amount_owed}}.]]"}</code>
+            </p>
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>Type this</th>
+                  <th>Fills in</th>
+                  <th>{sample ? `For ${sample.company_name}` : "Example"}</th>
+                  <th>Also works</th>
+                </tr>
+              </thead>
+              <tbody>
+                {FIELDS.map((f) => (
+                  <tr key={f.key}>
+                    <td>
+                      <code>{`{{${f.token}}}`}</code>
+                    </td>
+                    <td>{f.label}</td>
+                    <td>{sample ? rawVars(sample, sender)[f.key] || <span className="muted">— not on record</span> : ""}</td>
+                    <td className="small">{f.also.slice(0, 4).map((a) => `{{${a}}}`).join(" ")}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </details>
           <div className="row">
             <button className="btn primary" onClick={save} disabled={saving || saved}>
               {saving ? "Saving…" : saved ? "Saved" : `Save ${kind === "initial" ? "new-lead" : "follow-up"} email`}
@@ -201,6 +264,20 @@ export function TemplateBuilder({ category, compact = false }: { category: Categ
               Restore starting draft
             </button>
             {auto && kind === "initial" && <span className="small">Saved changes apply to the next emails that go out.</span>}
+          </div>
+          <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+            <input
+              className="input"
+              style={{ maxWidth: 280 }}
+              type="email"
+              value={testTo}
+              onChange={(e) => setTestTo(e.target.value)}
+              aria-label="Send a test to this address"
+            />
+            <button className="btn" onClick={sendTest} disabled={testing || !testTo}>
+              {testing ? "Sending…" : "Send test"}
+            </button>
+            <span className="small">Sends this draft, filled with made-up sample details (Sample Test Company LLC, $50,000), to your test address. No lead is used.</span>
           </div>
         </div>
         <div>
@@ -242,7 +319,7 @@ export function TemplateBuilder({ category, compact = false }: { category: Categ
               </p>
             ) : null;
           })()}
-          {!sender && <p className="small">Add your name and mailing address on the Outreach page so {"{{sender_name}}"} and the footer fill in.</p>}
+          {!sender && <p className="small">Add your name and mailing address on the Outreach page so {"{{your_name}}"} and the footer fill in.</p>}
         </div>
       </div>
     </div>

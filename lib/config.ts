@@ -286,14 +286,14 @@ export interface Template {
   updated_at?: string | null;
 }
 
-const SIGN = `\n\nBest regards,\n{{sender_name}}`;
+const SIGN = `\n\nBest regards,\n{{your_name}}`;
 
 export const DEFAULT_TEMPLATES: Record<Category, Record<TemplateKind, { subject: string; body: string }>> = {
   court: {
     initial: {
       subject: "{{company_name}} — your {{distress_type}} case[[ {{case_number}}]]",
       body:
-        `Hi {{first_name}},\n\nI saw {{matter}}.[[ The schedules show {{exact_total_debt}} in liabilities.]]\n\n` +
+        `Hi {{first_name}},\n\nI saw {{what_happened}}.[[ The schedules show {{total_debt}} in liabilities.]]\n\n` +
         `The next few weeks decide how much of the plan you control. I work with owners in restructuring to keep the business theirs and the creditors aligned. ` +
         `Would a 15-minute call this week help?` +
         SIGN,
@@ -309,21 +309,21 @@ export const DEFAULT_TEMPLATES: Record<Category, Record<TemplateKind, { subject:
     initial: {
       subject: "{{company_name}} — the tax balance with {{owed_to}}",
       body:
-        `Hi {{first_name}},\n\nI came across {{matter}}.[[ The balance on record for {{company_name}} is {{amount}}.]]\n\n` +
+        `Hi {{first_name}},\n\nI came across {{what_happened}}.[[ The balance on record for {{company_name}} is {{amount_owed}}.]]\n\n` +
         `There is usually room to settle, set up an installment plan or challenge the assessment before collection escalates. ` +
         `Would a short call this week be useful?` +
         SIGN,
     },
     followup: {
       subject: "Re: {{company_name}} — the tax balance with {{owed_to}}",
-      body: `Hi {{first_name}},\n\nCircling back on the[[ {{amount}}]] balance with {{owed_to}}. If it's already handled, just reply and I'll close my file.` + SIGN,
+      body: `Hi {{first_name}},\n\nCircling back on the[[ {{amount_owed}}]] balance with {{owed_to}}. If it's already handled, just reply and I'll close my file.` + SIGN,
     },
   },
   debt: {
     initial: {
       subject: "{{company_name}} — the balance owed to {{owed_to}}",
       body:
-        `Hi {{first_name}},\n\nI came across {{matter}}.[[ The amount on record is {{amount}}.]]\n\n` +
+        `Hi {{first_name}},\n\nI came across {{what_happened}}.[[ The amount on record is {{amount_owed}}.]]\n\n` +
         `Lenders often settle for far less than the full balance when the business comes to them with a plan. ` +
         `I help owners negotiate these down and keep operating. Open to a quick call?` +
         SIGN,

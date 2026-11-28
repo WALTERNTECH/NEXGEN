@@ -1,7 +1,55 @@
 import { getTemplate, saveTemplate, getSettings, CATEGORIES, DEFAULT_TEMPLATES, type Category, type TemplateKind } from "@/lib/config";
-import { PLACEHOLDERS } from "@/lib/render";
+import { PLACEHOLDERS, unknownTokens, resolveKey, render, type RenderLead } from "@/lib/render";
+import { sendMail, mailReady } from "@/lib/mailer";
 import { logRun } from "@/lib/runs";
 import { json, bad, body } from "../_util";
+
+/** Made-up details used for test emails — a test never uses a real lead. */
+const SAMPLE: Record<Category, RenderLead> = {
+  tax: {
+    company_name: "Sample Test Company LLC", category: "tax", source: "test", founder_full_name: "Jane Sample", founder_first_name: "Jane", founder_last_name: "Sample",
+    founder_title: "Owner", debt_amount: 50000, tax_debt: 50000, filing_date: new Date(Date.now() - 6 * 86_400_000).toISOString().slice(0, 10),
+    creditor_summary: "Florida Department of Revenue", court_name: "Florida Department of Revenue", biz_city: "Miami", biz_state: "FL", biz_address: "100 Sample St, Miami, FL",
+  },
+  debt: {
+    company_name: "Sample Test Company LLC", category: "debt", source: "courtlistener", founder_full_name: "Jane Sample", founder_first_name: "Jane", founder_last_name: "Sample",
+    founder_title: "Owner", debt_amount: 50000, filing_date: new Date(Date.now() - 6 * 86_400_000).toISOString().slice(0, 10), case_number: "1:26-cv-00000",
+    court_name: "District Court, S.D. Florida", creditor_summary: "Sample Capital Funding LLC", judge: "Judge Sample", biz_city: "Miami", biz_state: "FL",
+  },
+  court: {
+    company_name: "Sample Test Company LLC", category: "court", source: "courtlistener", founder_full_name: "Jane Sample", founder_first_name: "Jane", founder_last_name: "Sample",
+    founder_title: "Owner", debt_amount: 50000, tax_debt: 5000, secured_debt: 30000, unsecured_debt: 20000, distress_type: "Chapter 11",
+    filing_date: new Date(Date.now() - 6 * 86_400_000).toISOString().slice(0, 10), case_number: "26-00000", court_name: "United States Bankruptcy Court, S.D. Florida",
+    judge: "Judge Sample", trustee: "Trustee Sample", biz_city: "Miami", biz_state: "FL",
+  },
+};
+
+/** Send the current draft (saved or not), filled with the made-up sample details, to an address you choose. */
+export async function POST(req: Request) {
+  const b = await body<{ category?: Category; subject?: string; body?: string; to?: string }>(req);
+  if (!b.category || !(CATEGORIES as string[]).includes(b.category)) return bad("Unknown category");
+  const to = String(b.to ?? "").trim().toLowerCase();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) return bad("Enter the address to send the test to");
+  const subject = (b.subject ?? "").trim();
+  const text = (b.body ?? "").trim();
+  if (!subject || !text) return bad("Subject and message are both needed");
+  const problem = check(subject) ?? check(text);
+  if (problem) return bad(problem);
+  if (!(await mailReady()).ok) return bad("Connect a mailbox in Settings first");
+  const s = await getSettings();
+  try {
+    await sendMail({
+      to,
+      subject: render(subject, SAMPLE[b.category], s.sender_name),
+      body: render(text, SAMPLE[b.category], s.sender_name),
+      leadId: "00000000-0000-0000-0000-000000000000",
+    });
+  } catch (e) {
+    return bad(`Sending failed: ${(e as Error).message}`);
+  }
+  await logRun("send", true, `Test email (${b.category}) sent to ${to}`);
+  return json({ ok: true });
+}
 
 export const dynamic = "force-dynamic";
 
@@ -26,13 +74,13 @@ export async function PUT(req: Request) {
   return json({ ok: true, template: await getTemplate(b.kind, b.category) });
 }
 
-const KNOWN = new Set<string>([...PLACEHOLDERS, "debt_amount", "court_name"]);
-
 /** Catch template slips before they reach a lead: unknown details, a detail pasted twice in a row, unclosed brackets. */
 function check(t: string): string | null {
-  for (const m of t.matchAll(/\{\{\s*([^}]*?)\s*\}\}/g)) if (!KNOWN.has(m[1])) return `{{${m[1]}}} is not a detail NEXGEN knows — use the buttons above the subject`;
-  const twice = /\{\{\s*([a-z_]+)\s*\}\}[\s,.]*\{\{\s*\1\s*\}\}/.exec(t);
-  if (twice) return `{{${twice[1]}}} appears twice in a row — remove one`;
+  const unknown = unknownTokens(t);
+  if (unknown.length)
+    return `NEXGEN doesn't recognise ${unknown.join(", ")}. Use one of: ${PLACEHOLDERS.map((p) => `{{${p}}}`).join(" ")}`;
+  const twice = /\{\{\s*([^{}]+?)\s*\}\}[\s,.]*\{\{\s*([^{}]+?)\s*\}\}/g;
+  for (const m of t.matchAll(twice)) if (resolveKey(m[1]) && resolveKey(m[1]) === resolveKey(m[2])) return `{{${m[1]}}} appears twice in a row — remove one`;
   if ((t.match(/\[\[/g) ?? []).length !== (t.match(/\]\]/g) ?? []).length) return "A [[ is missing its closing ]] (or the other way round)";
   if ((t.match(/\{\{/g) ?? []).length !== (t.match(/\}\}/g) ?? []).length) return "A {{ is missing its closing }}";
   return null;
