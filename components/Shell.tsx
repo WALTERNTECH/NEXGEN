@@ -7,6 +7,7 @@ import { FeedProvider, useFeed } from "./feed";
 import { LeadDrawer } from "./LeadDrawer";
 import { IOverview, ILeads, IInbox, IOutreach, ILogs, ISettings, ISearch, IBell, IRefresh } from "./icons";
 import { ago } from "./util";
+import { InstallButton } from "./Install";
 
 const NAV = [
   { href: "/", label: "Overview", icon: IOverview },
@@ -109,12 +110,17 @@ function Frame({ children }: { children: React.ReactNode }) {
             <IBell />
             {(feed?.stats.unread_replies ?? 0) > 0 && <span className="badge">{feed!.stats.unread_replies}</span>}
           </Link>
+          <InstallButton compact />
           <button className="btn primary" onClick={sync} disabled={syncing}>
             <IRefresh className={syncing ? "spin" : ""} />
             <span>{syncing ? "Syncing…" : "Sync now"}</span>
           </button>
         </header>
-        <main className="content">{children}</main>
+        <main className="content">
+          <div className="route page-in" key={path}>
+            {children}
+          </div>
+        </main>
       </div>
 
       <nav className="tabbar">

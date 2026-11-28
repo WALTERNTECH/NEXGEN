@@ -1,5 +1,6 @@
 "use client";
 
+import { Skeleton } from "@/components/Skeleton";
 import { useCallback, useEffect, useState } from "react";
 import { useFeed } from "@/components/feed";
 import { api, fmtTime } from "@/components/util";
@@ -88,7 +89,7 @@ export default function LogsPage() {
 
       <div className="card">
         {!d ? (
-          <div className="empty muted">Loading…</div>
+          <Skeleton rows={6} />
         ) : view === "runs" ? (
           d.runs.length === 0 ? (
             <div className="empty">

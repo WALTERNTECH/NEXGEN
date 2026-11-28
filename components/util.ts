@@ -55,9 +55,9 @@ export interface Lead {
   case_notes?: { date: string | null; no: string | null; text: string }[] | null;
 }
 
-export const CAT_LABEL: Record<Category, string> = { court: "Court", tax: "Tax", debt: "Debt" };
+export const CAT_LABEL: Record<Category, string> = { court: "Courts", tax: "Tax Debt", debt: "Commercial Debt" };
 export const CAT_NAME: Record<Category, string> = {
-  court: "Chapter 11 / Subchapter V Restructuring",
+  court: "Courts",
   tax: "Tax Debt",
   debt: "Commercial Debt Lawsuits",
 };

@@ -1,5 +1,6 @@
 "use client";
 
+import { Skeleton } from "@/components/Skeleton";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useFeed } from "./feed";
 import { api, CAT_LABEL, CAT_NAME, type Category, type Lead } from "./util";
@@ -90,7 +91,7 @@ export function TemplateBuilder({ category, compact = false }: { category: Categ
   const [pick, setPick] = useState(0);
   const sample: Lead | undefined = samples.length ? samples[pick % samples.length] : undefined;
 
-  if (!data || !draft || !feed) return <div className="card card-b muted">Loading email builder…</div>;
+  if (!data || !draft || !feed) return <Skeleton rows={2} card />;
   const t = data.templates[category];
   const cur = draft[kind];
   const saved = t[kind].saved && t[kind].subject === cur.subject && t[kind].body === cur.body;

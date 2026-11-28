@@ -1,5 +1,6 @@
 "use client";
 
+import { Skeleton } from "@/components/Skeleton";
 import { whenText } from "@/components/feed";
 import { useEffect, useState } from "react";
 import { useFeed } from "@/components/feed";
@@ -167,7 +168,7 @@ export default function SettingsPage() {
       setPushState("off");
     }, "Alerts off on this device");
 
-  if (!v || !cats) return <div className="muted">Loading…</div>;
+  if (!v || !cats) return <Skeleton rows={4} />;
 
   return (
     <>

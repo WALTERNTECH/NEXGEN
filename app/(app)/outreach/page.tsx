@@ -1,5 +1,6 @@
 "use client";
 
+import { Skeleton } from "@/components/Skeleton";
 import { useEffect, useState } from "react";
 import { useFeed } from "@/components/feed";
 import { TemplateBuilder } from "@/components/TemplateBuilder";
@@ -36,7 +37,7 @@ export default function OutreachPage() {
     }
   };
 
-  if (!feed) return <div className="muted">Loading…</div>;
+  if (!feed) return <Skeleton />;
 
   return (
     <>

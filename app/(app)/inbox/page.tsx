@@ -1,5 +1,6 @@
 "use client";
 
+import { Skeleton } from "@/components/Skeleton";
 import { useCallback, useEffect, useState } from "react";
 import { useFeed } from "@/components/feed";
 import { IWhatsApp, IReply } from "@/components/icons";
@@ -51,7 +52,7 @@ export default function InboxPage() {
       {!feed?.health.mailbox && <div className="notice">Connect your mailbox in Settings so replies show up here.</div>}
       <div className="card">
         {!threads ? (
-          <div className="empty muted">Loading…</div>
+          <Skeleton rows={4} />
         ) : threads.length === 0 ? (
           <div className="empty">
             <b>No replies yet</b>

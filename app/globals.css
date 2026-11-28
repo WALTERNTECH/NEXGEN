@@ -368,3 +368,69 @@ h3 { font-size: 14px; }
 
 .update-bar { position: fixed; z-index: 60; left: 50%; top: 12px; transform: translateX(-50%); display: flex; align-items: center; gap: 12px;
   background: #111827; color: #fff; padding: 8px 10px 8px 16px; border-radius: 12px; font-size: 13.5px; box-shadow: 0 10px 30px rgba(17, 24, 39, 0.25); }
+
+/* ================= Solid web-app layer (2026-11-28) =================
+   Firmer text, real buttons for every tab and filter, screens that arrive instead of appear,
+   and moving placeholders while data loads. Later rules here win over the ones above. */
+
+:root {
+  --ink: #0f172a;
+  --ink-2: #334155;
+  --ink-3: #5b6676;
+  --line: #dde3ec;
+  --line-2: #c9d2de;
+  --shadow: 0 1px 2px rgba(15, 23, 42, 0.06), 0 2px 6px rgba(15, 23, 42, 0.05);
+}
+.small { color: var(--ink-3); }
+.page-head h1 { font-size: 26px; font-weight: 700; color: var(--ink); }
+.page-head p { color: var(--ink-2); font-weight: 500; }
+.card { border-color: var(--line); box-shadow: var(--shadow); }
+h2 { font-weight: 650; color: var(--ink); }
+
+/* Tabs: each one a solid, clearly clickable button. */
+.tabs { background: transparent; border: 0; padding: 2px; gap: 8px; flex-wrap: wrap; overflow: visible; }
+.tabs button {
+  background: var(--panel); border: 1px solid var(--line-2); box-shadow: var(--shadow);
+  color: var(--ink); font-weight: 600; padding: 9px 14px; border-radius: 10px; min-height: 40px;
+  transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.06s;
+}
+.tabs button:hover { border-color: var(--blue-3); background: #fbfcff; }
+.tabs button:active { transform: translateY(1px); }
+.tabs button.on { background: var(--blue); border-color: var(--blue); color: #fff; box-shadow: 0 2px 8px rgba(47, 91, 234, 0.28); }
+.tabs .n { background: var(--panel-2); color: var(--ink-2); font-weight: 600; font-size: 12px; padding: 2px 8px; }
+.tabs button.on .n { background: rgba(255, 255, 255, 0.22); color: #fff; }
+.tabs button.on .pill { background: rgba(255, 255, 255, 0.22); color: #fff; }
+.tabs .cat i { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9); }
+
+/* Filter chips: solid too. */
+.chip { background: var(--panel); border: 1px solid var(--line-2); color: var(--ink); font-weight: 550; height: 34px; padding: 0 13px; box-shadow: var(--shadow); cursor: pointer; }
+.chip:hover { border-color: var(--blue-3); }
+.chip.on { background: var(--ink); border-color: var(--ink); color: #fff; }
+.btn { font-weight: 600; }
+.toolbar { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; box-shadow: var(--shadow); }
+
+/* Screens arrive (Krypton-style): a short fade with a few pixels of lift. */
+@keyframes nx-page-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes nx-sheen { from { background-position: -180% 0; } to { background-position: 180% 0; } }
+.page-in { animation: nx-page-in 0.26s ease-out both; }
+.route { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+.skeleton {
+  background-color: #d8dee8;
+  background-image: linear-gradient(90deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.75) 50%, rgba(255, 255, 255, 0) 100%);
+  background-size: 180% 100%; background-repeat: no-repeat; animation: nx-sheen 1.25s ease-in-out infinite; border-radius: 6px;
+}
+.sk-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+.card .sk-row { background: var(--panel-2); }
+@media (prefers-reduced-motion: reduce) { .page-in, .skeleton { animation: none; } }
+
+/* Install app */
+.btn.install { background: var(--ink); border-color: var(--ink); color: #fff; }
+.btn.install:hover { background: #1e293b; }
+.install-help .steps { margin: 10px 0 6px; padding-left: 20px; display: flex; flex-direction: column; gap: 8px; color: var(--ink); }
+@media (max-width: 860px) {
+  .top .btn.install span { display: none; }
+  .top .btn.install { padding: 0 10px; }
+}
+@media (max-width: 560px) {
+  .tabs button { flex: 1 1 auto; justify-content: center; }
+}

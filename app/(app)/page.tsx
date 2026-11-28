@@ -1,5 +1,6 @@
 "use client";
 
+import { Skeleton } from "@/components/Skeleton";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useFeed } from "@/components/feed";
@@ -23,7 +24,7 @@ function Kpi({ label, value, delta, foot }: { label: string; value: number | str
 export default function Overview() {
   const { feed, error } = useFeed();
   const router = useRouter();
-  if (!feed) return <div className="muted">{error ?? "Loading…"}</div>;
+  if (!feed) return error ? <div className="notice">{error}</div> : <Skeleton />;
   const s = feed.stats;
   const h = feed.health;
   const setupMissing = [!h.courtlistener && "CourtListener key", !h.bettercontact && "BetterContact key", !h.mailbox && "mailbox"].filter(Boolean);

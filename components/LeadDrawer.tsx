@@ -1,5 +1,6 @@
 "use client";
 
+import { Skeleton } from "@/components/Skeleton";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useFeed } from "./feed";
 import { IX, IMail, IPhone, IWhatsApp, ILinkedIn, IExternal, IUserSearch, IReply, ITrash } from "./icons";
@@ -107,7 +108,9 @@ export function LeadDrawer({ id, onClose }: { id: string; onClose: () => void })
       <>
         <div className="scrim" onClick={onClose} />
         <aside className="drawer">
-          <div className="drawer-b muted">Loading…</div>
+          <div className="drawer-b">
+            <Skeleton rows={3} />
+          </div>
         </aside>
       </>
     );

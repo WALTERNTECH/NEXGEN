@@ -4,9 +4,9 @@ import { q, one } from "./db";
 
 export type Category = "tax" | "court" | "debt";
 export const CATEGORIES: Category[] = ["court", "tax", "debt"];
-export const CATEGORY_LABEL: Record<Category, string> = { tax: "Tax", court: "Court", debt: "Debt" };
+export const CATEGORY_LABEL: Record<Category, string> = { tax: "Tax Debt", court: "Courts", debt: "Commercial Debt" };
 export const CATEGORY_NAME: Record<Category, string> = {
-  court: "Chapter 11 / Subchapter V Restructuring",
+  court: "Courts",
   tax: "Tax Debt",
   debt: "Commercial Debt Lawsuits",
 };

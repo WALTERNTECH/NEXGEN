@@ -22,7 +22,35 @@ import { caseDetails } from "./figures";
 import { money } from "./render";
 import { enrich, result, account, leadIdOf, leadFinder, leadFinderResult, GOOD_EMAIL, type BcResult, type LfResult, type LfLead } from "./bettercontact";
 import { hunterEmailFinder, hunterDomainSearch } from "./sources";
-import { findOwner, findWebsite } from "./owners";
+import { findOwner, findWebsite, baseName } from "./owners";
+
+const FREE_MAIL = /^(gmail|googlemail|yahoo|ymail|hotmail|outlook|live|msn|aol|icloud|me|mac|proton|protonmail|comcast|att|sbcglobal|verizon|bellsouth|cox|charter|earthlink|gmx|mail|zoho)\./;
+const GENERIC_WORD = /^(INC|LLC|LTD|CORP|CO|COMPANY|THE|AND|OF|GROUP|SERVICES?|SOLUTIONS?|PARTNERS?|ASSOCIATES?|HOLDINGS?|ENTERPRISES?|INTERNATIONAL|USA|US|AMERICA|AMERICAN|GLOBAL|CONSULTING|MANAGEMENT|SYSTEMS?|TECHNOLOG(Y|IES)|INDUSTRIES|LLP|PC|PLLC|LP|DBA|NEW|FIRST)$/;
+
+/**
+ * Only keep an email that provably belongs to this business — never a same-name person somewhere else.
+ *  - on the company's own website that NEXGEN verified earlier (name + state on the page), or
+ *  - with no verified website: the domain must contain the business name's first two distinctive words
+ *    ("Salt Brewing" → needs "salt" AND "brewing"; "Access Carolina" ≠ foxcarolina.com).
+ * University/government addresses and free mailboxes (gmail, yahoo…) can't be tied to a business, so they're refused.
+ */
+export function emailFitsCompany(email: string, lead: { company_name: string; dba?: string | null; company_domain?: string | null; is_individual?: boolean | null }): boolean {
+  const domain = email.split("@")[1]?.toLowerCase() ?? "";
+  if (!domain || /\.(edu|gov|mil)$/.test(domain) || FREE_MAIL.test(domain)) return false;
+  if (lead.company_domain) return domain === lead.company_domain.toLowerCase() || domain.endsWith("." + lead.company_domain.toLowerCase());
+  const label = domain.split(".")[0].replace(/[^a-z0-9]/g, "");
+  const names = [lead.is_individual ? lead.dba : lead.company_name, lead.dba].filter(Boolean) as string[];
+  return names.some((n) => {
+    const words = baseName(n)
+      .split(" ")
+      .map((w) => w.toLowerCase().replace(/[^a-z0-9]/g, ""))
+      .filter((w) => w.length >= 3 && !GENERIC_WORD.test(w.toUpperCase()));
+    const need = words.slice(0, 2);
+    // One distinctive word ("Seismic") is easy to find inside other names (boreholeseismic): the domain must start with it.
+    if (need.length === 1) return label.startsWith(need[0]);
+    return need.length > 0 && need.every((w) => label.includes(w));
+  });
+}
 import { importCdtfa, importSba } from "./importers";
 import { importStateTaxes } from "./statetax";
 import { runApifyFeeds } from "./apify";
@@ -468,6 +496,12 @@ export async function applyEnrichment(res: BcResult, via: "webhook" | "poll"): P
       const taken = await one(`select id from leads where direct_email = $1 and id <> $2`, [email, leadId]);
       if (taken) emailSaved = null; // the same person is already a lead: never write to them twice
     }
+    if (emailSaved && !emailFitsCompany(emailSaved, lead)) {
+      // A same-name person at another organisation: not this business's owner — don't use it.
+      await logRun("enrich", false, `${lead.company_name}: found ${emailSaved.split("@")[1]} — not this company's domain, not used`);
+      await q(`update leads set owner_lookup_note = concat_ws(' · ', owner_lookup_note, $2) where id = $1`, [leadId, `email at ${emailSaved.split("@")[1]} rejected (different organisation)`]);
+      emailSaved = null;
+    }
     const ok = Boolean(emailSaved || phone);
     const upd = await q(
       `update leads set direct_email = $2, email_status = $3, direct_mobile = $4, linkedin_url = coalesce($5, linkedin_url),
@@ -598,6 +632,11 @@ async function setFoundEmail(
 ): Promise<boolean> {
   const taken = await one(`select id from leads where direct_email = $1 and id <> $2`, [f.email, leadId]);
   if (taken) return false;
+  const lead = await one<{ company_name: string; dba: string | null; company_domain: string | null; is_individual: boolean }>(
+    `select company_name, dba, company_domain, is_individual from leads where id = $1`,
+    [leadId],
+  );
+  if (!lead || !emailFitsCompany(f.email, lead)) return false;
   const full = f.first && f.last ? `${f.first} ${f.last}` : null;
   const r = await q(
     `update leads set direct_email = $2, email_status = 'valid', contact_source = $3, company_domain = coalesce(company_domain, $4),
@@ -794,6 +833,13 @@ async function saveFound(
   if (email) {
     const taken = await one(`select id from leads where direct_email = $1 and id <> $2`, [email, leadId]);
     if (taken) email = null;
+  }
+  if (email) {
+    const lead = await one<{ company_name: string; dba: string | null; company_domain: string | null; is_individual: boolean }>(
+      `select company_name, dba, company_domain, is_individual from leads where id = $1`,
+      [leadId],
+    );
+    if (!lead || !emailFitsCompany(email, lead)) email = null;
   }
   const ok = Boolean(email || c.phone);
   const upd = await q(

@@ -1,4 +1,5 @@
 "use client";
+import { Skeleton } from "@/components/Skeleton";
 
 import { useEffect, useMemo, useState } from "react";
 import { useFeed } from "@/components/feed";
@@ -112,7 +113,7 @@ export default function LeadsPage() {
   const { feed, search, refresh } = useFeed();
   const [cat, setCat] = useState<Category | "all">("all");
   const [filter, setFilter] = useState<Filter>("all");
-  const [source, setSource] = useState<Source>("incoming");
+  const [source, setSource] = useState<Source>("all");
   const [showBuilder, setShowBuilder] = useState(true);
   const [showBackfill, setShowBackfill] = useState(false);
 
@@ -154,6 +155,8 @@ export default function LeadsPage() {
     a.download = `nexgen-leads-${cat}-${source}-${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
   };
+
+  if (!feed) return <Skeleton />;
 
   return (
     <>
@@ -219,9 +222,9 @@ export default function LeadsPage() {
 
       <div className="toolbar">
         <div className="tabs">
-          {(["incoming", "backfill", "all"] as const).map((s) => (
+          {(["all", "incoming", "backfill"] as const).map((s) => (
             <button key={s} className={source === s ? "on" : ""} onClick={() => setSource(s)}>
-              {s === "incoming" ? "Incoming" : s === "backfill" ? "Backfill" : "Both"}
+              {s === "incoming" ? "New only" : s === "backfill" ? "Backfill only" : "All leads"}
               <span className="n">{s === "all" ? bySearch.length : bySearch.filter((l) => (s === "backfill" ? l.is_historical_backfill : !l.is_historical_backfill)).length}</span>
             </button>
           ))}
