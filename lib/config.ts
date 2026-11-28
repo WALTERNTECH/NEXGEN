@@ -27,6 +27,8 @@ export interface Settings {
   auto_followup_days: number;
   /** BetterContact charges up to 10 credits per mobile number vs ~1 per email: off by default. */
   find_phones: boolean;
+  /** Send only on US weekdays, 8 am – 5 pm Eastern (better inbox placement and replies). */
+  us_business_hours: boolean;
   /** Research backfill leads automatically too (emails only), until BetterContact credits run out. */
   enrich_backfill: boolean;
   /** Individuals (not companies) in tax/debt suits are kept only when the amount owed is at least this much. */
@@ -65,6 +67,7 @@ export const DEFAULT_SETTINGS: Settings = {
   lookback_days: 2,
   auto_followup_days: 0,
   find_phones: false,
+  us_business_hours: true,
   enrich_backfill: true,
   individual_min_amount: 5000,
   source_cdtfa: true,
@@ -122,6 +125,7 @@ export async function saveSettings(patch: Partial<Settings>) {
   next.source_cdtfa = Boolean(next.source_cdtfa);
   next.source_sba = Boolean(next.source_sba);
   next.find_phones = Boolean(next.find_phones);
+  next.us_business_hours = next.us_business_hours !== false;
   next.enrich_backfill = Boolean(next.enrich_backfill);
   await setSetting("app", next);
   return next;
@@ -287,46 +291,46 @@ const SIGN = `\n\nBest regards,\n{{sender_name}}`;
 export const DEFAULT_TEMPLATES: Record<Category, Record<TemplateKind, { subject: string; body: string }>> = {
   court: {
     initial: {
-      subject: "{{company_name}} — your Chapter 11 case {{case_number}}",
+      subject: "{{company_name}} — your {{distress_type}} case[[ {{case_number}}]]",
       body:
-        `Hi {{first_name}},\n\nI saw that {{company_name}} filed for {{distress_type}} {{days_in_distress}} days ago ({{insolvency_stage}}). ` +
-        `With {{exact_total_debt}} in liabilities on the schedules, the next few weeks decide how much of the plan you control.\n\n` +
-        `I work with owners in restructuring to keep the business theirs and the creditors aligned. Would a 15-minute call this week help?` +
+        `Hi {{first_name}},\n\nI saw {{matter}}.[[ The schedules show {{exact_total_debt}} in liabilities.]]\n\n` +
+        `The next few weeks decide how much of the plan you control. I work with owners in restructuring to keep the business theirs and the creditors aligned. ` +
+        `Would a 15-minute call this week help?` +
         SIGN,
     },
     followup: {
-      subject: "Re: {{company_name}} — your Chapter 11 case {{case_number}}",
+      subject: "Re: {{company_name}} — your {{distress_type}} case[[ {{case_number}}]]",
       body:
-        `Hi {{first_name}},\n\nFollowing up on my note about case {{case_number}}. If now isn't the right time, reply "not now" and I won't write again.` +
+        `Hi {{first_name}},\n\nFollowing up on my note about {{company_name}}'s case[[ ({{case_number}})]]. If now isn't the right time, reply "not now" and I won't write again.` +
         SIGN,
     },
   },
   tax: {
     initial: {
-      subject: "{{company_name}} — the federal tax case {{case_number}}",
+      subject: "{{company_name}} — the tax balance with {{owed_to}}",
       body:
-        `Hi {{first_name}},\n\nI noticed the government's tax suit against {{company_name}} (case {{case_number}}, filed {{days_in_distress}} days ago). ` +
-        `The amount at issue is {{exact_tax_debt}}.\n\nThere is usually room to settle, set up an installment plan or challenge the assessment before judgment. ` +
+        `Hi {{first_name}},\n\nI came across {{matter}}.[[ The balance on record for {{company_name}} is {{amount}}.]]\n\n` +
+        `There is usually room to settle, set up an installment plan or challenge the assessment before collection escalates. ` +
         `Would a short call this week be useful?` +
         SIGN,
     },
     followup: {
-      subject: "Re: {{company_name}} — the federal tax case {{case_number}}",
-      body: `Hi {{first_name}},\n\nCircling back on the tax case. If it's already handled, just reply and I'll close my file.` + SIGN,
+      subject: "Re: {{company_name}} — the tax balance with {{owed_to}}",
+      body: `Hi {{first_name}},\n\nCircling back on the[[ {{amount}}]] balance with {{owed_to}}. If it's already handled, just reply and I'll close my file.` + SIGN,
     },
   },
   debt: {
     initial: {
-      subject: "{{company_name}} — the lawsuit filed {{days_in_distress}} days ago",
+      subject: "{{company_name}} — the balance owed to {{owed_to}}",
       body:
-        `Hi {{first_name}},\n\nI saw the collection suit against {{company_name}} (case {{case_number}}, {{exact_total_debt}} claimed). ` +
-        `Lenders and cash-advance funders often settle for far less before judgment when the business has a plan.\n\n` +
+        `Hi {{first_name}},\n\nI came across {{matter}}.[[ The amount on record is {{amount}}.]]\n\n` +
+        `Lenders often settle for far less than the full balance when the business comes to them with a plan. ` +
         `I help owners negotiate these down and keep operating. Open to a quick call?` +
         SIGN,
     },
     followup: {
-      subject: "Re: {{company_name}} — the lawsuit filed {{days_in_distress}} days ago",
-      body: `Hi {{first_name}},\n\nFollowing up on the suit against {{company_name}}. If now isn't the right time, reply "not now" and I won't write again.` + SIGN,
+      subject: "Re: {{company_name}} — the balance owed to {{owed_to}}",
+      body: `Hi {{first_name}},\n\nFollowing up on the balance with {{owed_to}}. If now isn't the right time, reply "not now" and I won't write again.` + SIGN,
     },
   },
 };

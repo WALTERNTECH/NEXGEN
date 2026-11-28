@@ -86,6 +86,7 @@ export function LeadList({ leads, selectable = true, empty }: { leads: Lead[]; s
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [kind, setKind] = useState<"initial" | "followup" | null>(null);
   const [busy, setBusy] = useState(false);
+  const [review, setReview] = useState<{ emails: BulkEmail[]; address: string; at: number } | null>(null);
 
   const visibleIds = useMemo(() => new Set(leads.map((l) => l.id)), [leads]);
   const selected = [...sel].filter((id) => visibleIds.has(id));
@@ -103,8 +104,24 @@ export function LeadList({ leads, selectable = true, empty }: { leads: Lead[]; s
     ? selectedLeads.filter((l) => l.direct_email && l.status !== "unsubscribed" && !l.queued && (kind === "initial" ? !l.auto_email_sent : l.auto_email_sent)).length
     : 0;
 
+  // Before anything goes out: build every selected lead's own email so you can step through them.
+  const openReview = async () => {
+    if (!kind) return;
+    setBusy(true);
+    try {
+      const r = await api<{ emails: BulkEmail[]; physical_address: string }>("/api/leads/bulk", { method: "POST", json: { action: "preview", kind, ids: selected } });
+      if (!r.emails.length) toast("None of the selected leads can get this email", true);
+      else setReview({ emails: r.emails, address: r.physical_address, at: 0 });
+    } catch (e) {
+      toast((e as Error).message, true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const send = async () => {
     if (!kind) return;
+    setReview(null);
     setBusy(true);
     try {
       const r = await api<{ queued: number; skipped: Record<string, number> }>("/api/leads/bulk", { method: "POST", json: { action: "send", kind, ids: selected } });
@@ -280,8 +297,8 @@ export function LeadList({ leads, selectable = true, empty }: { leads: Lead[]; s
               Follow-up email
             </button>
           </div>
-          <button className="btn primary" disabled={!kind || busy || eligible === 0} onClick={send}>
-            {kind ? `Send to ${eligible}` : "Pick an email type"}
+          <button className="btn primary" disabled={!kind || busy || eligible === 0} onClick={openReview}>
+            {kind ? `Review & send to ${eligible}` : "Pick an email type"}
           </button>
           {kind && eligible < selected.length && (
             <span style={{ fontSize: 12, color: "#cbd2e1" }}>
@@ -302,6 +319,77 @@ export function LeadList({ leads, selectable = true, empty }: { leads: Lead[]; s
           </button>
         </div>
       )}
+      {review && kind && (() => {
+        const e = review.emails[review.at];
+        const n = review.emails.length;
+        const go = (d: number) => setReview({ ...review, at: (review.at + d + n) % n });
+        return (
+          <>
+            <div className="scrim" onClick={() => setReview(null)} />
+            <div className="review" role="dialog" aria-label="Review emails before sending">
+              <div className="review-h">
+                <div>
+                  <b>
+                    {n} {kind === "initial" ? "new-lead" : "follow-up"} email{n === 1 ? "" : "s"} — each written for its own lead
+                  </b>
+                  <div className="small">Step through them; nothing is sent until you press Send.</div>
+                </div>
+                <button className="btn ghost sm" onClick={() => setReview(null)} aria-label="Close">
+                  ✕
+                </button>
+              </div>
+              <div className="row" style={{ justifyContent: "space-between", margin: "10px 0" }}>
+                <button className="btn ghost sm" onClick={() => go(-1)} disabled={n < 2}>
+                  ‹ Previous
+                </button>
+                <span className="small">
+                  {review.at + 1} of {n} · {e.company}
+                </span>
+                <button className="btn ghost sm" onClick={() => go(1)} disabled={n < 2}>
+                  Next ›
+                </button>
+              </div>
+              <div className="preview" style={{ maxHeight: "50vh", overflow: "auto" }}>
+                <div className="small">To: {e.to}</div>
+                <div className="subj">{e.subject}</div>
+                <pre>{e.body}</pre>
+                <div className="foot">
+                  {review.address && (
+                    <>
+                      {review.address}
+                      <br />
+                    </>
+                  )}
+                  Don&apos;t want these emails? <u>Unsubscribe</u>
+                </div>
+              </div>
+              {e.missing.length > 0 && (
+                <p className="small" style={{ color: "var(--warn)" }}>
+                  No {e.missing.join(", ").replace(/_/g, " ")} on record for this lead — a neutral phrase is used.
+                </p>
+              )}
+              <div className="row" style={{ justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
+                <button className="btn ghost" onClick={() => setReview(null)}>
+                  Cancel
+                </button>
+                <button className="btn primary" onClick={send} disabled={busy}>
+                  Send all {n}
+                </button>
+              </div>
+            </div>
+          </>
+        );
+      })()}
     </>
   );
+}
+
+interface BulkEmail {
+  id: string;
+  company: string;
+  category: string;
+  to: string;
+  subject: string;
+  body: string;
+  missing: string[];
 }

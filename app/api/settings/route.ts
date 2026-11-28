@@ -21,6 +21,8 @@ import {
   type Mailbox,
 } from "@/lib/config";
 import { verifyMailbox } from "@/lib/mailer";
+import { checkDomain, currentCheck, warmupCap, sendPaused, inUsBusinessHours } from "@/lib/deliverability";
+import { setSetting } from "@/lib/config";
 import { q } from "@/lib/db";
 import { ping, searchCategory, searchesLeftThisHour, ymd, RateLimited } from "@/lib/courtlistener";
 import { companyFor, heuristicExtract } from "@/lib/extract";
@@ -41,6 +43,14 @@ async function view() {
     defaults: DEFAULT_QUERIES,
     secrets,
     mailbox: m ? { email: m.email, smtp_host: m.smtp_host, smtp_port: m.smtp_port, imap_host: m.imap_host, imap_port: m.imap_port, fromEnv: Boolean(process.env.MAILBOX_EMAIL) } : null,
+    deliverability: m
+      ? {
+          check: await currentCheck().catch(() => null),
+          paused: await sendPaused(),
+          warmup: await warmupCap((await getSettings()).daily_limit),
+          business_hours_now: inUsBusinessHours(),
+        }
+      : null,
     webhook: webhookUrl() ? webhookUrl()!.replace(/token=.*/, "token=•••") : null,
     imports: await (async () => {
       const { getSetting } = await import("@/lib/config");
@@ -60,6 +70,11 @@ async function view() {
 
 export async function GET(req: Request) {
   const check = new URL(req.url).searchParams.get("check");
+  if (check === "deliverability") {
+    const m = await mailbox();
+    if (!m) return json({ ok: false, message: "Connect a mailbox first" });
+    return json({ ok: true, result: await checkDomain(m.email, m.smtp_host) });
+  }
   if (check === "query") {
     // Try one category's search: how many filings match, and which of them NEXGEN would keep as leads.
     const u = new URL(req.url).searchParams;
@@ -155,7 +170,12 @@ export async function PUT(req: Request) {
     settings?: Partial<Settings>;
     secrets?: Partial<Record<SecretName, string | null>>;
     mailbox?: (Partial<Mailbox> & { remove?: boolean }) | null;
+    resume_sending?: boolean;
   }>(req);
+  if (b.resume_sending) {
+    await setSetting("send_paused", null);
+    await logRun("send", true, "Sending resumed");
+  }
   if (b.settings) {
     const before = await getSettings();
     // Update B: a category's Auto-Send can only go on once that category's new-lead email has been saved.
@@ -212,6 +232,8 @@ export async function PUT(req: Request) {
       }
       await saveMailbox(m);
       await logRun("system", true, `Mailbox ${email} connected`);
+      const d = await checkDomain(m.email, m.smtp_host).catch(() => null);
+      if (d && !d.ready) await logRun("send", false, `${d.domain}: sending is held until its records are fixed — ${d.fixes[0] ?? ""}`);
     }
   }
   return json(await view());

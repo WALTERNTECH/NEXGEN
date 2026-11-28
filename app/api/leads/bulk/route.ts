@@ -1,6 +1,9 @@
 import { after } from "next/server";
 import { q } from "@/lib/db";
 import { queueEmail, processQueue, enrichPending, type EmailKind } from "@/lib/pipeline";
+import { getSettings, getTemplate, type Category } from "@/lib/config";
+import { render, missingFor } from "@/lib/render";
+import type { LeadVars } from "@/lib/mailer";
 import { json, bad, body } from "../../_util";
 
 export const dynamic = "force-dynamic";
@@ -25,6 +28,31 @@ export async function POST(req: Request) {
     );
     if (!rows.length) return bad("None of the selected leads has an owner name to search for");
     return json({ ok: true, result: await enrichPending(rows.map((r) => r.id)) });
+  }
+  if (b.action === "preview") {
+    // Exactly what each selected lead will receive: its own category's template, filled in from its own record.
+    if (b.kind !== "initial" && b.kind !== "followup") return bad("Choose New-lead email or Follow-up email");
+    const s = await getSettings();
+    const leads = await q<LeadVars & { category: Category; direct_email: string | null; status: string; auto_email_sent: boolean }>(
+      `select * from leads where id = any($1) order by company_name`,
+      [ids],
+    );
+    const tpl: Partial<Record<Category, { subject: string; body: string }>> = {};
+    const emails = [];
+    for (const l of leads) {
+      if (!l.direct_email || l.status === "unsubscribed" || (b.kind === "initial" ? l.auto_email_sent : !l.auto_email_sent)) continue;
+      const t = (tpl[l.category] ??= await getTemplate(b.kind, l.category));
+      emails.push({
+        id: l.id,
+        company: l.company_name,
+        category: l.category,
+        to: l.direct_email,
+        subject: render(t.subject, l, s.sender_name),
+        body: render(t.body, l, s.sender_name),
+        missing: [...new Set([...missingFor(t.subject, l, s.sender_name), ...missingFor(t.body, l, s.sender_name)])].filter((k) => k !== "sender_name"),
+      });
+    }
+    return json({ emails, physical_address: s.physical_address });
   }
   if (b.action === "send") {
     if (b.kind !== "initial" && b.kind !== "followup") return bad("Choose New-lead email or Follow-up email");

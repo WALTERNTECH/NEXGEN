@@ -1,5 +1,6 @@
 import { q } from "@/lib/db";
 import { json } from "../_util";
+import { openRows } from "@/lib/privacy";
 
 export const dynamic = "force-dynamic";
 
@@ -11,5 +12,5 @@ export async function GET() {
      join lateral (select subject, body, received_at, from_email from replies where lead_id = l.id order by received_at desc limit 1) r on true
      order by r.received_at desc limit 300`,
   );
-  return json({ threads });
+  return json({ threads: openRows(threads) });
 }

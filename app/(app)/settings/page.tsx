@@ -9,6 +9,9 @@ interface View {
     ingest_every_min: number;
     lookback_days: number;
     find_phones: boolean;
+    us_business_hours: boolean;
+    daily_limit: number;
+    send_gap_min: number;
     enrich_backfill: boolean;
     individual_min_amount: number;
     source_cdtfa: boolean;
@@ -25,6 +28,12 @@ interface View {
   mailbox: { email: string; smtp_host: string; smtp_port: number; imap_host: string; imap_port: number; fromEnv: boolean } | null;
   webhook: string | null;
   link: string | null;
+  deliverability: {
+    check: { domain: string; free: boolean; mx: boolean; spf: { ok: boolean; record: string | null }; dkim: { ok: boolean; selector: string | null }; dmarc: { ok: boolean; record: string | null; policy: string | null }; ready: boolean; fixes: string[]; checked_at: string } | null;
+    paused: { at: string; reason: string } | null;
+    warmup: { cap: number; day: number };
+    business_hours_now: boolean;
+  } | null;
   imports?: {
     cdtfa: { rows: number; added: number; at: string } | null;
     sba: { url: string; offset: number; size: number; scanned: number; matched: number; added: number; status: string; finished_at: string | null } | null;
@@ -243,7 +252,65 @@ export default function SettingsPage() {
                   </button>
                 )}
               </div>
-            ) : (
+            ) : null}
+            {v.mailbox && v.deliverability && (() => {
+              const d = v.deliverability;
+              const c = d.check;
+              const mark = (ok: boolean, warnOnly = false) => <span className={`pill ${ok ? "green" : warnOnly ? "amber" : "red"}`}>{ok ? "OK" : warnOnly ? "Check" : "Missing"}</span>;
+              return (
+                <div className="placement">
+                  <div className="row" style={{ justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+                    <b>Inbox placement (keeping emails out of spam)</b>
+                    <button className="btn sm" disabled={busy === "dl"} onClick={() => run("dl", () => api("/api/settings?check=deliverability"), "Sender records checked again")}>
+                      {busy === "dl" ? "Checking…" : "Check again"}
+                    </button>
+                  </div>
+                  {d.paused && (
+                    <div className="notice">
+                      <b>Sending paused.</b> {d.paused.reason}. Remove or fix the bounced addresses, then{" "}
+                      <button className="btn sm" onClick={() => run("resume", () => api("/api/settings", { method: "PUT", json: { resume_sending: true } }), "Sending resumed")}>
+                        Resume sending
+                      </button>
+                    </div>
+                  )}
+                  {c && (
+                    <>
+                      <div className="checks">
+                        <span>Sender proof (SPF) {mark(c.spf.ok)}</span>
+                        <span>Signature (DKIM) {mark(c.dkim.ok, true)}</span>
+                        <span>Policy (DMARC) {mark(c.dmarc.ok, true)}</span>
+                        {!c.free && <span>Mail server (MX) {mark(c.mx)}</span>}
+                      </div>
+                      {!c.ready && <div className="notice">Sending is held until the red item is fixed — mail from {c.domain} without it goes straight to spam.</div>}
+                      {c.fixes.length > 0 && (
+                        <ul className="small" style={{ margin: 0, paddingLeft: 18 }}>
+                          {c.fixes.map((f) => (
+                            <li key={f} style={{ marginBottom: 4 }}>{f}</li>
+                          ))}
+                        </ul>
+                      )}
+                    </>
+                  )}
+                  <div className="small">
+                    Warm-up day {d.warmup.day}: up to <b>{d.warmup.cap}</b> emails today{d.warmup.cap < v.settings.daily_limit ? ` (rising to your limit of ${v.settings.daily_limit} over two weeks)` : ""}. Emails go
+                    out {v.settings.send_gap_min}–{Math.round(v.settings.send_gap_min * 1.6)} minutes apart at random, plain text with no tracking, each with a one-click unsubscribe. Bounced
+                    addresses are never emailed again, and sending pauses itself if more than 5% bounce.
+                  </div>
+                  <div className="row" style={{ justifyContent: "space-between", gap: 10 }}>
+                    <span className="small">
+                      Send only on US weekdays, 8 am – 5 pm Eastern {v.settings.us_business_hours ? (d.business_hours_now ? "· sending now" : "· queued emails wait until then") : ""}
+                    </span>
+                    <button
+                      className={`switch ${v.settings.us_business_hours ? "on" : ""}`}
+                      aria-pressed={v.settings.us_business_hours}
+                      aria-label="Send only in US business hours"
+                      onClick={() => run("hours", () => api("/api/settings", { method: "PUT", json: { settings: { us_business_hours: !v.settings.us_business_hours } } }), v.settings.us_business_hours ? "Sending at any hour" : "Sending in US business hours only")}
+                    />
+                  </div>
+                </div>
+              );
+            })()}
+            {!v.mailbox && (
               <>
                 <div className="form-grid">
                   <div className="field">
@@ -281,6 +348,9 @@ export default function SettingsPage() {
                 >
                   {busy === "mb" ? "Checking sign-in…" : "Connect mailbox"}
                 </button>
+                <p className="small" style={{ margin: 0 }}>
+                  Best inbox placement: a mailbox on your own domain (you@yourcompany.com) with SPF, DKIM and DMARC set up. NEXGEN checks those records as soon as you connect.
+                </p>
               </>
             )}
           </div>

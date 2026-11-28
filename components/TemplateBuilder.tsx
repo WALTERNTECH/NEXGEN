@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useFeed } from "./feed";
 import { api, CAT_LABEL, CAT_NAME, type Category, type Lead } from "./util";
-import { PLACEHOLDERS, render } from "@/lib/render";
+import { FIELDS, render, rawVars, missingFor } from "@/lib/render";
 
 type Kind = "initial" | "followup";
 interface Tpl {
@@ -16,6 +16,7 @@ interface Tpl {
 }
 interface TplResp {
   templates: Record<Category, { initial: Tpl; followup: Tpl; auto_send: boolean }>;
+  defaults: Record<Category, Record<Kind, { subject: string; body: string }>>;
   sender_name: string;
   physical_address: string;
 }
@@ -43,10 +44,14 @@ export function TemplateBuilder({ category, compact = false }: { category: Categ
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [category]);
 
-  const sample: Lead | undefined = useMemo(() => {
+  // The preview flips through this category's real leads, so you can see each one gets its own details.
+  const samples: Lead[] = useMemo(() => {
     const inCat = (feed?.leads ?? []).filter((l) => l.category === category);
-    return inCat.find((l) => l.direct_email && l.founder_full_name) ?? inCat.find((l) => l.founder_full_name) ?? inCat[0];
+    const withEmail = inCat.filter((l) => l.direct_email);
+    return withEmail.length ? withEmail : inCat;
   }, [feed?.leads, category]);
+  const [pick, setPick] = useState(0);
+  const sample: Lead | undefined = samples.length ? samples[pick % samples.length] : undefined;
 
   if (!data || !draft || !feed) return <div className="card card-b muted">Loading email builder…</div>;
   const t = data.templates[category];
@@ -56,6 +61,25 @@ export function TemplateBuilder({ category, compact = false }: { category: Categ
   const initialSaved = t.initial.saved;
   const sender = data.sender_name;
   const eligible = feed.leads.filter((l) => l.category === category && l.status === "enriched" && l.direct_email && !l.auto_email_sent && !l.queued).length;
+
+  const restore = () => {
+    if (!confirm("Replace this draft with NEXGEN's starting draft? (Nothing is saved until you press Save.)")) return;
+    setDraft({ ...draft, [kind]: { ...data.defaults[category][kind] } });
+  };
+
+  // Wrap the selected text in [[ ]] so it's left out for leads that don't have a detail used inside it.
+  const optional = () => {
+    const el = lastFocus.current === "subject" ? subjRef.current : bodyRef.current;
+    const field = lastFocus.current === "subject" ? "subject" : "body";
+    const text = cur[field];
+    const a = el?.selectionStart ?? 0;
+    const b = el?.selectionEnd ?? 0;
+    if (a === b) {
+      toast("Select the sentence first, then press this", true);
+      return;
+    }
+    setDraft({ ...draft, [kind]: { ...cur, [field]: text.slice(0, a) + "[[" + text.slice(a, b) + "]]" + text.slice(b) } });
+  };
 
   const insert = (v: string) => {
     const token = `{{${v}}}`;
@@ -123,12 +147,28 @@ export function TemplateBuilder({ category, compact = false }: { category: Categ
               Follow-up {t.followup.saved ? "✓" : ""}
             </button>
           </div>
+          <p className="small" style={{ margin: 0 }}>
+            Write the email once. When it goes out, every detail below is filled in from <b>that lead&apos;s own record</b> — its name, company, amount, agency or court, date and case number — so each lead gets an email about its own case.
+            Tap a detail to put it where your cursor is.
+          </p>
           <div className="vars">
-            {PLACEHOLDERS.map((v) => (
-              <button key={v} className="var" onMouseDown={(e) => e.preventDefault()} onClick={() => insert(v)}>
-                {`{{${v}}}`}
-              </button>
-            ))}
+            {FIELDS.filter((f) => !f.cats || f.cats.includes(category)).map((f) => {
+              const val = sample ? rawVars(sample, sender)[f.key] : "";
+              return (
+                <button
+                  key={f.key}
+                  className="var"
+                  title={`{{${f.key}}}${val ? ` — e.g. ${val}` : ""}`}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => insert(f.key)}
+                >
+                  {f.label}
+                </button>
+              );
+            })}
+            <button className="var opt" onMouseDown={(e) => e.preventDefault()} onClick={optional} title="Wrap the selected sentence in [[ ]]">
+              [[ Leave out if missing ]]
+            </button>
           </div>
           <div className="field">
             <label htmlFor={`subj-${category}`}>Subject</label>
@@ -157,11 +197,29 @@ export function TemplateBuilder({ category, compact = false }: { category: Categ
             <button className="btn primary" onClick={save} disabled={saving || saved}>
               {saving ? "Saving…" : saved ? "Saved" : `Save ${kind === "initial" ? "new-lead" : "follow-up"} email`}
             </button>
+            <button className="btn ghost" onClick={restore}>
+              Restore starting draft
+            </button>
             {auto && kind === "initial" && <span className="small">Saved changes apply to the next emails that go out.</span>}
           </div>
         </div>
         <div>
-          <div className="section-t">Preview {sample ? `— as sent to ${sample.company_name}` : "— sample lead"}</div>
+          <div className="row" style={{ justifyContent: "space-between", flexWrap: "wrap", gap: 6 }}>
+            <div className="section-t" style={{ margin: 0 }}>Preview {sample ? `— as ${sample.company_name} will get it` : "— sample lead"}</div>
+            {samples.length > 1 && (
+              <div className="row" style={{ gap: 4 }}>
+                <button className="btn ghost sm" onClick={() => setPick((pick - 1 + samples.length) % samples.length)} aria-label="Previous lead">
+                  ‹
+                </button>
+                <span className="small">
+                  lead {(pick % samples.length) + 1} of {samples.length}
+                </span>
+                <button className="btn ghost sm" onClick={() => setPick(pick + 1)} aria-label="Next lead">
+                  ›
+                </button>
+              </div>
+            )}
+          </div>
           <div className="preview">
             <div className="small">To: {sample?.direct_email ?? "owner@company.com"}</div>
             <div className="subj">{render(cur.subject, sample ?? { company_name: "Acme Logistics LLC" }, sender)}</div>
@@ -176,6 +234,14 @@ export function TemplateBuilder({ category, compact = false }: { category: Categ
               Don&apos;t want these emails? <u>Unsubscribe</u>
             </div>
           </div>
+          {sample && (() => {
+            const miss = [...new Set([...missingFor(cur.subject, sample, sender), ...missingFor(cur.body, sample, sender)])].filter((k) => k !== "sender_name");
+            return miss.length ? (
+              <p className="small" style={{ color: "var(--warn, #b45309)" }}>
+                This lead has no {miss.map((k) => FIELDS.find((f) => f.key === k)?.label.toLowerCase() ?? k).join(", ")} on record — a neutral phrase is used instead. Wrap that sentence in [[ ]] to leave it out.
+              </p>
+            ) : null;
+          })()}
           {!sender && <p className="small">Add your name and mailing address on the Outreach page so {"{{sender_name}}"} and the footer fill in.</p>}
         </div>
       </div>

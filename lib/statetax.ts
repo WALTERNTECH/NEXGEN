@@ -12,11 +12,11 @@ import { saveRows, type ImportRow } from "./importers";
  * inside an interactive portal, CT sends it by email on request, GA and LA stopped publishing.
  */
 export const TAX_STATES = {
-  ca_ftb: { label: "California (FTB corporate tax)", page: "https://www.ftb.ca.gov/about-ftb/newsroom/top-500-past-due-balances/corporate-income-tax-list.html" },
-  fl: { label: "Florida (tax warrants)", page: "https://floridarevenue.com/taxes/compliance/Pages/delinquent_taxpayer.aspx" },
-  de: { label: "Delaware (business tax delinquents)", page: "https://revenue.delaware.gov/delawares-delinquent-taxpayers" },
-  sd: { label: "South Dakota (business tax liens)", page: "https://dor.sd.gov/businesses/taxes/" },
-  wy: { label: "Wyoming (sales & use tax)", page: "https://excise-tax-div.wyo.gov/general-administrative/delinquent-taxpayer-list" },
+  ca_ftb: { label: "California (FTB corporate tax)", agency: "California Franchise Tax Board", page: "https://www.ftb.ca.gov/about-ftb/newsroom/top-500-past-due-balances/corporate-income-tax-list.html" },
+  fl: { label: "Florida (tax warrants)", agency: "Florida Department of Revenue", page: "https://floridarevenue.com/taxes/compliance/Pages/delinquent_taxpayer.aspx" },
+  de: { label: "Delaware (business tax delinquents)", agency: "Delaware Division of Revenue", page: "https://revenue.delaware.gov/delawares-delinquent-taxpayers" },
+  sd: { label: "South Dakota (business tax liens)", agency: "South Dakota Department of Revenue", page: "https://dor.sd.gov/businesses/taxes/" },
+  wy: { label: "Wyoming (sales & use tax)", agency: "Wyoming Department of Revenue", page: "https://excise-tax-div.wyo.gov/general-administrative/delinquent-taxpayer-list" },
 } as const;
 export type TaxState = keyof typeof TAX_STATES;
 export const TAX_STATE_CODES = Object.keys(TAX_STATES) as TaxState[];
@@ -109,7 +109,7 @@ function toRow(code: TaxState, r: TaxRecord): ImportRow {
     state: r.state,
     amount: Math.round(r.amount * 100) / 100,
     date: r.date,
-    creditor: `${label.split(" (")[0]} Department of Revenue`,
+    creditor: TAX_STATES[code].agency,
     distress: `State tax delinquency — ${label}`,
     stage: "On the state's published delinquent-tax list",
     caseName: `${label}: ${r.name}`,

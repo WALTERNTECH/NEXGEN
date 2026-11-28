@@ -7,6 +7,7 @@ import { getSettings, getTemplate, type Category } from "@/lib/config";
 import { render } from "@/lib/render";
 import { sendMail } from "@/lib/mailer";
 import { logRun } from "@/lib/runs";
+import { sealText, openText, openRows } from "@/lib/privacy";
 import { json, bad, body } from "../../_util";
 
 export const dynamic = "force-dynamic";
@@ -27,10 +28,10 @@ async function detail(id: string) {
     const t = await getTemplate(k, lead.category);
     preview[k] = { subject: render(t.subject, lead, s.sender_name), body: render(t.body, lead, s.sender_name), saved: t.saved };
   }
-  const [emails, replies] = await Promise.all([
+  const [emails, replies] = (await Promise.all([
     q(`select id, kind, recipient_email, subject, body, status, origin, error, created_at, sent_at from email_log where lead_id = $1 order by created_at`, [id]),
     q(`select id, from_email, from_name, subject, body, received_at, is_read from replies where lead_id = $1 order by received_at`, [id]),
-  ]);
+  ])).map((rows) => openRows(rows));
   return { lead, emails, replies, preview, physical_address: s.physical_address };
 }
 
@@ -138,14 +139,15 @@ export async function POST(req: Request, { params }: Ctx) {
       `select subject, message_id from replies where lead_id = $1 order by received_at desc limit 1`,
       [id],
     );
+    const lastSubject = openText(last?.subject);
     const subject =
-      (b.subject ?? "").trim() || (last?.subject ? (/^re:/i.test(last.subject) ? last.subject : `Re: ${last.subject}`) : "Following up");
+      (b.subject ?? "").trim() || (lastSubject ? (/^re:/i.test(lastSubject) ? lastSubject : `Re: ${lastSubject}`) : "Following up");
     try {
       const r = await sendMail({ to: lead.direct_email, subject, body: message, leadId: id, inReplyTo: last?.message_id });
       await q(
         `insert into email_log (lead_id, kind, recipient_email, subject, body, status, origin, message_id, sent_at)
          values ($1,'reply',$2,$3,$4,'sent','manual',$5,now())`,
-        [id, lead.direct_email, subject, message, r.messageId],
+        [id, lead.direct_email, sealText(subject), sealText(message), r.messageId],
       );
       await q(`update leads set last_email_at = now(), unread_replies = 0, updated_at = now() where id = $1`, [id]);
       await q(`update replies set is_read = true where lead_id = $1`, [id]);

@@ -3,6 +3,8 @@ import { mailbox, getSetting, setSetting } from "./config";
 import { q, one } from "./db";
 import { notify } from "./push";
 import { logRun } from "./runs";
+import { sealText } from "./privacy";
+import { recordBounces } from "./deliverability";
 
 function stripQuoted(text: string) {
   const lines = text.replace(/\r/g, "").split("\n");
@@ -33,6 +35,7 @@ export async function checkInbox(): Promise<{ checked: number; matched: number }
   await c.connect();
   let checked = 0;
   let matched = 0;
+  let bounced = 0;
   const state = (await getSetting<{ uid: number; validity: string }>("imap_state")) ?? { uid: 0, validity: "" };
   try {
     const lock = await c.getMailboxLock("INBOX");
@@ -53,6 +56,16 @@ export async function checkInbox(): Promise<{ checked: number; matched: number }
         maxUid = Math.max(maxUid, msg.uid);
         const sender = msg.envelope?.from?.[0]?.address?.toLowerCase();
         if (!sender || sender === m.email.toLowerCase()) continue;
+        // Bounce notices: only the failed address is taken from them, nothing is stored.
+        if (/^(mailer-daemon|postmaster|mail-daemon|bounce)/i.test(sender) || /undeliver|delivery (status|failure|has failed)|returned mail|failure notice|could not be delivered/i.test(msg.envelope?.subject ?? "")) {
+          const full = await c.fetchOne(String(msg.uid), { source: true }, { uid: true });
+          if (full && full.source) {
+            const raw = full.source.toString("utf8");
+            const found = [...new Set((raw.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g) ?? []).map((x) => x.toLowerCase()))].filter((x) => x !== m.email.toLowerCase());
+            bounced += await recordBounces(found);
+          }
+          continue;
+        }
         const inReplyTo = msg.envelope?.inReplyTo ?? null;
         const lead =
           (await one<{ id: string; company_name: string }>(`select id, company_name from leads where lower(direct_email) = $1`, [sender])) ??
@@ -71,7 +84,7 @@ export async function checkInbox(): Promise<{ checked: number; matched: number }
         const ins = await q(
           `insert into replies (lead_id, from_email, from_name, subject, body, message_id, received_at)
            values ($1, $2, $3, $4, $5, $6, $7) on conflict (message_id) do nothing returning id`,
-          [lead.id, sender, parsed.from?.value?.[0]?.name ?? null, parsed.subject ?? "", body, messageId, parsed.date ?? new Date()],
+          [lead.id, sender, parsed.from?.value?.[0]?.name ?? null, sealText(parsed.subject ?? ""), sealText(body), messageId, parsed.date ?? new Date()],
         );
         if (!ins.length) continue;
         matched++;
@@ -86,7 +99,7 @@ export async function checkInbox(): Promise<{ checked: number; matched: number }
         await q(`update email_log set status = 'cancelled', error = 'Lead replied' where lead_id = $1 and status = 'queued'`, [lead.id]);
         await notify({
           title: `Reply from ${lead.company_name}`,
-          body: body.slice(0, 140) || parsed.subject || "New reply",
+          body: "Open NEXGEN to read it", // the reply itself never goes into a notification
           url: `/inbox?lead=${lead.id}`,
           tag: `reply-${lead.id}`,
         });
@@ -99,5 +112,6 @@ export async function checkInbox(): Promise<{ checked: number; matched: number }
     await c.logout().catch(() => {});
   }
   if (matched) await logRun("inbox", true, `${matched} new repl${matched === 1 ? "y" : "ies"}`, { checked, matched });
+  if (bounced) await logRun("inbox", false, `${bounced} bounced address${bounced === 1 ? "" : "es"} marked — never emailed again`);
   return { checked, matched };
 }

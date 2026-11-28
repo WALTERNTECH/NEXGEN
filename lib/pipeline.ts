@@ -25,6 +25,8 @@ import { importStateTaxes } from "./statetax";
 import { runApifyFeeds } from "./apify";
 import { render, sendMail, mailReady, type LeadVars } from "./mailer";
 import { checkInbox } from "./inbox";
+import { sealText } from "./privacy";
+import { currentCheck, warmupCap, inUsBusinessHours, nextSendAllowed, scheduleNextSend, sendPaused } from "./deliverability";
 import { notify } from "./push";
 import { logRun } from "./runs";
 
@@ -858,6 +860,7 @@ export async function queueEmail(leadId: string, kind: EmailKind, origin: "auto"
     return await tx(async (t) => {
       const lead = (await t.query<LeadRow>(`select * from leads where id = $1 for update`, [leadId])).rows[0];
       if (!lead || !lead.direct_email) return { ok: false, reason: "No verified email" };
+      if (lead.email_status === "bounced") return { ok: false, reason: "Email bounced" };
       if (lead.status === "unsubscribed") return { ok: false, reason: "Unsubscribed" };
       if (kind === "initial" && lead.auto_email_sent) return { ok: false, reason: "Already contacted" };
       if (kind === "followup" && !lead.auto_email_sent) return { ok: false, reason: "Send the new-lead email first" };
@@ -877,9 +880,21 @@ export async function queueEmail(leadId: string, kind: EmailKind, origin: "auto"
 export async function processQueue(max = 25): Promise<string> {
   const ready = await mailReady();
   if (!ready.ok) return "no mailbox";
+  // Inbox placement guards (lib/deliverability.ts): paused after bounces, domain records, business hours, warm-up, human spacing.
+  const paused = await sendPaused();
+  if (paused) return `paused: ${paused.reason}`;
+  const s0 = await getSettings();
+  if (s0.us_business_hours && !inUsBusinessHours()) return "outside US business hours — queued emails wait";
+  const dom = await currentCheck().catch(() => null);
+  if (dom && !dom.ready) {
+    await noteOnce("domain", `Sending held: ${dom.domain} is missing records that keep mail out of spam — see Settings → Mailbox`);
+    return "held: sender domain records missing";
+  }
+  if (!(await nextSendAllowed())) return "waiting for the next send slot";
   if (!(await lease("send", 280))) return "already sending";
   try {
     const s = await getSettings();
+    const warm = await warmupCap(s.daily_limit);
     await q(`update email_log set status = 'failed', error = 'Interrupted — check Sent folder before retrying' where status = 'sending' and created_at < now() - interval '15 minutes'`);
     let sent = 0;
     const t0 = Date.now();
@@ -887,8 +902,14 @@ export async function processQueue(max = 25): Promise<string> {
       const st = await one<{ today: number; last: string | null }>(
         `select count(*) filter (where sent_at > now() - interval '24 hours') as today, max(sent_at) as last from email_log where status = 'sent'`,
       );
-      if ((st?.today ?? 0) >= s.daily_limit) {
-        if (sent === 0) await noteOnce("cap", `Daily limit of ${s.daily_limit} reached — the rest stay queued`);
+      if ((st?.today ?? 0) >= warm.cap) {
+        if (sent === 0)
+          await noteOnce(
+            "cap",
+            warm.cap < s.daily_limit
+              ? `Warm-up day ${warm.day}: ${warm.cap} emails today (new mailboxes ramp up to your limit of ${s.daily_limit} to stay out of spam) — the rest stay queued`
+              : `Daily limit of ${s.daily_limit} reached — the rest stay queued`,
+          );
         break;
       }
       if (s.send_gap_min > 0 && st?.last && Date.now() - Date.parse(st.last) < s.send_gap_min * 60_000 - 5_000) break;
@@ -920,7 +941,7 @@ export async function processQueue(max = 25): Promise<string> {
           : null;
       try {
         const r = await sendMail({ to: job.recipient_email, subject, body, leadId: lead.id, inReplyTo: thread });
-        await q(`update email_log set status = 'sent', sent_at = now(), subject = $2, body = $3, message_id = $4 where id = $1`, [job.id, subject, body, r.messageId]);
+        await q(`update email_log set status = 'sent', sent_at = now(), subject = $2, body = $3, message_id = $4 where id = $1`, [job.id, sealText(subject), sealText(body), r.messageId]);
         if (job.kind === "initial") {
           await q(
             `update leads set auto_email_sent = true, contacted_at = now(), last_email_at = now(),
@@ -931,6 +952,7 @@ export async function processQueue(max = 25): Promise<string> {
           await q(`update leads set followups_sent = followups_sent + 1, last_email_at = now(), updated_at = now() where id = $1`, [lead.id]);
         }
         sent++;
+        await scheduleNextSend(s.send_gap_min);
         await logRun("send", true, `${CATEGORY_LABEL[lead.category]} ${job.kind === "initial" ? "new-lead email" : "follow-up"} sent to ${job.recipient_email} (${lead.company_name})`, {
           lead_id: lead.id,
           log_id: job.id,

@@ -1,5 +1,6 @@
 import { q, one } from "@/lib/db";
 import { json } from "../_util";
+import { openRows } from "@/lib/privacy";
 
 export const dynamic = "force-dynamic";
 
@@ -22,5 +23,5 @@ export async function GET(req: Request) {
        from email_log`,
     ),
   ]);
-  return json({ runs, emails, dedupe: dup });
+  return json({ runs, emails: openRows(emails), dedupe: dup });
 }
