@@ -60,6 +60,15 @@ export async function GET() {
   return json({
     build: process.env.NEXT_PUBLIC_BUILD_STAMP ?? null,
     sendPlans: await (await import("@/lib/deliverability")).sendPlans().catch(() => []),
+    waiting: await (async () => {
+      const { categoriesWithoutMailbox } = await import("@/lib/config");
+      const out: { category: string; assigned: string | null; queued: number }[] = [];
+      for (const w of await categoriesWithoutMailbox()) {
+        const r = await q<{ n: number }>(`select count(*) as n from email_log e join leads l on l.id = e.lead_id where e.status = 'queued' and l.category = $1`, [w.category]);
+        out.push({ ...w, queued: Number(r[0]?.n ?? 0) });
+      }
+      return out;
+    })().catch(() => []),
     now: new Date().toISOString(),
     leads,
     stats: { ...stats, ...queue, unread_replies: unread?.n ?? 0 },

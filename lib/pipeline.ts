@@ -10,7 +10,7 @@ import {
   templateSaved,
   secret,
   mailboxes,
-  mailboxRoutes,
+  categoriesWithoutMailbox,
   categoriesFor,
   type Category,
 } from "./config";
@@ -900,14 +900,10 @@ export async function processQueue(max = 25): Promise<string> {
     // Emails you send one at a time from a lead go out right away; bulk and automatic ones keep to business hours and spacing.
     const offHours = s.us_business_hours && !inUsBusinessHours(new Date(), s.send_weekends);
     const boxes = await mailboxes();
-    // Categories assigned to a mailbox that isn't connected just wait (they never go out from another address).
-    const routes = await mailboxRoutes();
-    for (const c of CATEGORIES) {
-      const to = routes[c];
-      if (to && !boxes.some((m) => m.email.toLowerCase() === to)) {
-        const waiting = await one<{ n: number }>(`select count(*) as n from email_log e join leads l on l.id = e.lead_id where e.status = 'queued' and l.category = $1`, [c]);
-        if (Number(waiting?.n ?? 0)) report.push(`${CATEGORY_LABEL[c]}: waiting for ${to} to be connected`);
-      }
+    // A category without its own mailbox just waits (it never borrows another category's address).
+    for (const w of await categoriesWithoutMailbox()) {
+      const waiting = await one<{ n: number }>(`select count(*) as n from email_log e join leads l on l.id = e.lead_id where e.status = 'queued' and l.category = $1`, [w.category]);
+      if (Number(waiting?.n ?? 0)) report.push(`${CATEGORY_LABEL[w.category]}: waiting for ${w.assigned ?? "its own mailbox"}`);
     }
     for (const m of boxes) {
       const cats = await categoriesFor(m.email);

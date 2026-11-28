@@ -174,9 +174,19 @@ export function LeadList({ leads, selectable = true, empty }: { leads: Lead[]; s
 
   if (!leads.length) return <div className="empty">{empty ?? <b>No leads here yet</b>}</div>;
   const plans = (feed?.sendPlans ?? []).filter((p) => p.queued > 0);
+  const waiting = (feed?.waiting ?? []).filter((w) => w.queued > 0);
 
   return (
     <>
+      {waiting.map((w) => (
+        <div className="notice" style={{ marginBottom: 10 }} key={w.category}>
+          <b>
+            {w.queued} {CAT_LABEL[w.category as keyof typeof CAT_LABEL] ?? w.category} email{w.queued === 1 ? "" : "s"} waiting
+          </b>{" "}
+          — {w.assigned ? <>assigned to {w.assigned}, which isn&apos;t connected.</> : <>this category has no mailbox yet.</>} Connect one in Settings → Mailboxes and choose{" "}
+          {CAT_LABEL[w.category as keyof typeof CAT_LABEL] ?? w.category}.
+        </div>
+      ))}
       {plans.length > 0 && (
         <div className="notice" style={{ marginBottom: 10 }}>
           {plans.map((plan) => (

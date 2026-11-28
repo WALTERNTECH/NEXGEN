@@ -26,6 +26,7 @@ export function whenText(iso: string | null) {
 
 export interface Feed {
   sendPlans?: SendPlan[];
+  waiting?: { category: string; assigned: string | null; queued: number }[];
   now: string;
   leads: Lead[];
   stats: {

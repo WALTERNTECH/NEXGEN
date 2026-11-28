@@ -43,6 +43,7 @@ interface View {
     plan: { queued: number; nextAt: string | null; why: string; sentToday: number } | null;
   }[];
   routes: Partial<Record<Category, string>>;
+  unassigned: { category: Category; assigned: string | null }[];
   sending: { paused: { at: string; reason: string } | null; steps: readonly { upToDay: number; perDay: number }[]; business_hours_now: boolean };
   imports?: {
     cdtfa: { rows: number; added: number; at: string } | null;
@@ -89,6 +90,7 @@ export default function SettingsPage() {
   const [checks, setChecks] = useState<Record<string, string>>({});
   const [mb, setMb] = useState({ email: "", password: "", smtp_host: "", smtp_port: "", imap_host: "", imap_port: "" });
   const [adv, setAdv] = useState(false);
+  const [mbCat, setMbCat] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [cats, setCats] = useState<View["settings"]["categories"] | null>(null);
   const [sched, setSched] = useState({ ingest_every_min: 20, lookback_days: 2 });
@@ -257,14 +259,17 @@ export default function SettingsPage() {
                 </button>
               </div>
             )}
-            {CATS.map((c) => {
-              const to = v.routes[c];
-              return to && !v.mailboxes.some((m) => m.email.toLowerCase() === to) ? (
-                <div className="notice" key={c}>
-                  {CAT_NAME[c]} is assigned to <b>{to}</b>, which isn&apos;t connected — its emails wait until you connect it below.
-                </div>
-              ) : null;
-            })}
+            {v.unassigned.map((u) => (
+              <div className="notice" key={u.category}>
+                <b>{CAT_NAME[u.category]}</b>{" "}
+                {u.assigned ? (
+                  <>is assigned to {u.assigned}, which isn&apos;t connected</>
+                ) : (
+                  <>has no mailbox yet</>
+                )}{" "}
+                — its emails wait (they never go out from another category&apos;s address). Connect its mailbox below and choose {CAT_LABEL[u.category]}.
+              </div>
+            ))}
             {v.mailboxes.map((m) => {
               const c = m.check;
               const mark = (ok: boolean, warnOnly = false) => <span className={`pill ${ok ? "green" : warnOnly ? "amber" : "red"}`}>{ok ? "OK" : warnOnly ? "Check" : "Missing"}</span>;
@@ -293,7 +298,6 @@ export default function SettingsPage() {
                     <span className="small">Sends for:</span>
                     {CATS.map((cat) => {
                       const on = v.routes[cat]?.toLowerCase() === m.email.toLowerCase();
-                      const byDefault = !v.routes[cat] && m.categories.includes(cat);
                       return (
                         <button
                           key={cat}
@@ -309,7 +313,6 @@ export default function SettingsPage() {
                         >
                           {on ? "✓ " : ""}
                           {CAT_LABEL[cat]}
-                          {byDefault ? " (default)" : ""}
                         </button>
                       );
                     })}
@@ -426,6 +429,18 @@ export default function SettingsPage() {
                   <label htmlFor="mbp">Password / app password</label>
                   <input id="mbp" className="input" type="password" autoComplete="new-password" value={mb.password} onChange={(e) => setMb({ ...mb, password: e.target.value })} />
                 </div>
+                <div className="field">
+                  <label htmlFor="mbc">Sends for</label>
+                  <select id="mbc" className="input" value={mbCat} onChange={(e) => setMbCat(e.target.value)}>
+                    <option value="">Choose later</option>
+                    {CATS.map((c) => (
+                      <option key={c} value={c}>
+                        {CAT_NAME[c]}
+                        {v.routes[c] ? ` (now ${v.routes[c]})` : " (no mailbox yet)"}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
               <button className="btn sm" style={{ alignSelf: "flex-start" }} onClick={() => setAdv(!adv)}>
                 {adv ? "Hide" : "Server settings (optional)"}
@@ -448,7 +463,8 @@ export default function SettingsPage() {
                   run(
                     "mb",
                     async () => {
-                      await api("/api/settings", { method: "PUT", json: { mailbox: mb } });
+                      await api("/api/settings", { method: "PUT", json: { mailbox: { ...mb, category: mbCat || undefined } } });
+                      setMbCat("");
                       setMb({ email: "", password: "", smtp_host: "", smtp_port: "", imap_host: "", imap_port: "" });
                     },
                     "Mailbox connected — now pick which categories it sends for",

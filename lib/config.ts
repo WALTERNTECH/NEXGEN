@@ -307,20 +307,31 @@ export async function routeCategory(category: Category, email: string | null) {
 }
 
 /**
- * The mailbox a category sends from: its assigned one, otherwise the first connected mailbox.
- * If a category is assigned to a mailbox that isn't connected (yet), its emails wait — they never go out from another address.
+ * The mailbox a category sends from. Court, Tax and Debt are kept separate: once categories are assigned,
+ * each one sends only from its own mailbox — a category with no mailbox (or one that isn't connected) waits,
+ * it never borrows another category's address. Only a simple one-mailbox setup with no assignments at all
+ * sends everything from that mailbox.
  */
 export async function mailboxFor(category?: Category | null): Promise<Mailbox | null> {
   const list = await mailboxes();
   if (!list.length) return null;
-  if (category) {
-    const to = (await mailboxRoutes())[category];
-    if (to) return list.find((m) => m.email.toLowerCase() === to) ?? null;
+  const routes = await mailboxRoutes();
+  if (category && Object.keys(routes).length) {
+    const to = routes[category];
+    return to ? (list.find((m) => m.email.toLowerCase() === to) ?? null) : null;
   }
   return list[0];
 }
 
-/** Which categories a mailbox sends for (an unassigned category falls to the first mailbox). */
+/** Categories that can't send right now: no mailbox assigned, or the assigned one isn't connected. */
+export async function categoriesWithoutMailbox(): Promise<{ category: Category; assigned: string | null }[]> {
+  const out: { category: Category; assigned: string | null }[] = [];
+  const routes = await mailboxRoutes();
+  for (const c of CATEGORIES) if (!(await mailboxFor(c))) out.push({ category: c, assigned: routes[c] ?? null });
+  return out;
+}
+
+/** Which categories a mailbox sends for. */
 export async function categoriesFor(email: string): Promise<Category[]> {
   const out: Category[] = [];
   for (const c of CATEGORIES) if ((await mailboxFor(c))?.email.toLowerCase() === email.toLowerCase()) out.push(c);

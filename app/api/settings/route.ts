@@ -9,6 +9,7 @@ import {
   mailboxRoutes,
   routeCategory,
   categoriesFor,
+  categoriesWithoutMailbox,
   setSetting,
   presetFor,
   appUrl,
@@ -64,6 +65,7 @@ async function view() {
       })),
     ),
     routes: await mailboxRoutes(),
+    unassigned: await categoriesWithoutMailbox(),
     sending: { paused: await sendPaused(), steps: WARMUP, business_hours_now: inUsBusinessHours(new Date(), st.send_weekends) },
     webhook: webhookUrl() ? webhookUrl()!.replace(/token=.*/, "token=•••") : null,
     imports: await (async () => {
@@ -183,7 +185,7 @@ export async function PUT(req: Request) {
   const b = await body<{
     settings?: Partial<Settings>;
     secrets?: Partial<Record<SecretName, string | null>>;
-    mailbox?: (Partial<Mailbox> & { remove?: boolean | string }) | null;
+    mailbox?: (Partial<Mailbox> & { remove?: boolean | string; category?: string }) | null;
     /** Assign a category to a mailbox: { category: "tax", email: "richard@…" } (email null = first mailbox). */
     route?: { category?: string; email?: string | null };
     resume_sending?: boolean;
@@ -263,6 +265,11 @@ export async function PUT(req: Request) {
       // Each mailbox warms up on its own, from the first time it was connected.
       await markMailboxStart(m.email);
       await logRun("system", true, `Mailbox ${email} connected`);
+      // Connected for a specific category (e.g. Court): it sends that category's emails from now on.
+      if (b.mailbox.category && (CATEGORIES as string[]).includes(b.mailbox.category)) {
+        await routeCategory(b.mailbox.category as (typeof CATEGORIES)[number], email);
+        await logRun("system", true, `${CATEGORY_LABEL[b.mailbox.category as (typeof CATEGORIES)[number]]} emails now send from ${email}`);
+      }
       const d = await checkDomain(m.email, m.smtp_host).catch(() => null);
       if (d && !d.ready) await logRun("send", false, `${d.domain}: sending is held until its records are fixed — ${d.fixes[0] ?? ""}`);
     }
