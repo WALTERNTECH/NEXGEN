@@ -365,3 +365,6 @@ h3 { font-size: 14px; }
 .guide .tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 6px; }
 .guide .tbl th, .guide .tbl td { text-align: left; padding: 5px 6px; border-top: 1px solid var(--line); vertical-align: top; }
 .guide code { font-size: 12px; }
+
+.update-bar { position: fixed; z-index: 60; left: 50%; top: 12px; transform: translateX(-50%); display: flex; align-items: center; gap: 12px;
+  background: #111827; color: #fff; padding: 8px 10px 8px 16px; border-radius: 12px; font-size: 13.5px; box-shadow: 0 10px 30px rgba(17, 24, 39, 0.25); }

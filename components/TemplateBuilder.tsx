@@ -21,6 +21,24 @@ interface TplResp {
   physical_address: string;
 }
 
+const SAMPLE_LEAD = {
+  company_name: "Sample Test Company LLC",
+  source: "test",
+  founder_full_name: "Jane Sample",
+  founder_first_name: "Jane",
+  founder_last_name: "Sample",
+  founder_title: "Owner",
+  direct_email: "info@kryptoninvestments.online",
+  debt_amount: 50000,
+  tax_debt: 50000,
+  filing_date: new Date(Date.now() - 6 * 86_400_000).toISOString().slice(0, 10),
+  case_number: "26-00000",
+  court_name: "Florida Department of Revenue",
+  creditor_summary: "Florida Department of Revenue",
+  biz_city: "Miami",
+  biz_state: "FL",
+};
+
 /** Update B: one email builder per category, with that category's own Auto-Send switch. */
 export function TemplateBuilder({ category, compact = false }: { category: Category; compact?: boolean }) {
   const { feed, toast, refresh } = useFeed();
@@ -54,7 +72,20 @@ export function TemplateBuilder({ category, compact = false }: { category: Categ
   const samples: Lead[] = useMemo(() => {
     const inCat = (feed?.leads ?? []).filter((l) => l.category === category);
     const withEmail = inCat.filter((l) => l.direct_email);
-    return withEmail.length ? withEmail : inCat;
+    const real = withEmail.length ? withEmail : inCat;
+    // Test leads first; otherwise a made-up sample, so the preview never starts on a real lead.
+    const tests = real.filter((l) => (l as Lead & { source?: string }).source === "test");
+    const sample = {
+      ...SAMPLE_LEAD,
+      id: "sample",
+      category,
+      ...(category === "court"
+        ? { source: "courtlistener", distress_type: "Chapter 11", court_name: "United States Bankruptcy Court, S.D. Florida", creditor_summary: null }
+        : category === "debt"
+          ? { source: "courtlistener", court_name: "District Court, S.D. Florida", creditor_summary: "Sample Capital Funding LLC" }
+          : {}),
+    } as unknown as Lead;
+    return [...(tests.length ? tests : [sample]), ...real.filter((l) => !tests.includes(l))];
   }, [feed?.leads, category]);
   const [pick, setPick] = useState(0);
   const sample: Lead | undefined = samples.length ? samples[pick % samples.length] : undefined;

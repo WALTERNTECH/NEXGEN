@@ -104,6 +104,8 @@ export function FeedProvider({ children }: { children: React.ReactNode }) {
   const [fresh, setFresh] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
   const known = useRef<Set<string> | null>(null);
+  // A page left open keeps running the code it loaded with; when a newer version is deployed, offer a reload.
+  const [stale, setStale] = useState(false);
   const inflight = useRef(false);
 
   const toast = useCallback((text: string, err = false) => {
@@ -116,7 +118,8 @@ export function FeedProvider({ children }: { children: React.ReactNode }) {
     if (inflight.current) return;
     inflight.current = true;
     try {
-      const f = await api<Feed>("/api/feed");
+      const f = await api<Feed & { build?: string | null }>("/api/feed");
+      if (f.build && process.env.NEXT_PUBLIC_BUILD_STAMP && f.build !== process.env.NEXT_PUBLIC_BUILD_STAMP) setStale(true);
       const ids = new Set(f.leads.map((l) => l.id));
       if (known.current) {
         const added = f.leads.filter((l) => !known.current!.has(l.id));
@@ -187,6 +190,14 @@ export function FeedProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <FeedCtx.Provider value={{ feed, error, updatedAt, refresh, syncing, sync, toast, toasts, openLead, leadId, leadFocus, fresh, search, setSearch }}>
+      {stale && (
+        <div className="update-bar" role="status">
+          A new version of NEXGEN is live.
+          <button className="btn sm primary" onClick={() => location.reload()}>
+            Reload now
+          </button>
+        </div>
+      )}
       {children}
     </FeedCtx.Provider>
   );
