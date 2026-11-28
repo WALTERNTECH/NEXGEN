@@ -26,7 +26,7 @@ import { runApifyFeeds } from "./apify";
 import { render, sendMail, mailReady, type LeadVars } from "./mailer";
 import { checkInbox } from "./inbox";
 import { sealText } from "./privacy";
-import { currentCheck, warmupCap, inUsBusinessHours, nextSendAllowed, scheduleNextSend, sendPaused } from "./deliverability";
+import { currentCheck, warmupCap, inUsBusinessHours, nextSendAllowed, scheduleNextSend, sendPaused, sentLast24h } from "./deliverability";
 import { notify } from "./push";
 import { logRun } from "./runs";
 
@@ -904,9 +904,7 @@ export async function processQueue(max = 25): Promise<string> {
     let sent = 0;
     const t0 = Date.now();
     while (sent < max && Date.now() - t0 < 40_000) {
-      const st = await one<{ today: number; last: string | null }>(
-        `select count(*) filter (where sent_at > now() - interval '24 hours') as today, max(sent_at) as last from email_log where status = 'sent'`,
-      );
+      const st = await sentLast24h();
       if ((st?.today ?? 0) >= warm.cap) {
         if (sent === 0)
           await noteOnce(
@@ -958,7 +956,8 @@ export async function processQueue(max = 25): Promise<string> {
           await q(`update leads set followups_sent = followups_sent + 1, last_email_at = now(), updated_at = now() where id = $1`, [lead.id]);
         }
         sent++;
-        await scheduleNextSend(s.send_gap_min);
+        // New domains: the day's allowance is spread evenly across US business hours.
+        await scheduleNextSend(Math.max(s.send_gap_min, warm.spreadMin));
         await logRun("send", true, `${CATEGORY_LABEL[lead.category]} ${job.kind === "initial" ? "new-lead email" : "follow-up"} sent to ${job.recipient_email} (${lead.company_name})`, {
           lead_id: lead.id,
           log_id: job.id,

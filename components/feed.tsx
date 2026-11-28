@@ -3,7 +3,27 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { api, type Lead, type Category } from "./util";
 
+export interface SendPlan {
+  queued: number;
+  nextAt: string | null;
+  why: string;
+  day: number;
+  perDay: number;
+  spreadMin: number;
+  sentToday: number;
+}
+
+/** "Mon 3:00 PM" in the viewer's own time, or "in 12 min" when it's soon. */
+export function whenText(iso: string | null) {
+  if (!iso) return "not scheduled";
+  const ms = Date.parse(iso) - Date.now();
+  if (ms < 90_000) return "within a minute";
+  if (ms < 3_600_000) return `in ${Math.round(ms / 60_000)} min`;
+  return new Date(iso).toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" });
+}
+
 export interface Feed {
+  sendPlan?: SendPlan | null;
   now: string;
   leads: Lead[];
   stats: {

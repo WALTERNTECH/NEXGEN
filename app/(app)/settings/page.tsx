@@ -1,5 +1,6 @@
 "use client";
 
+import { whenText } from "@/components/feed";
 import { useEffect, useState } from "react";
 import { useFeed } from "@/components/feed";
 import { api, CAT_LABEL, CATS, type Category } from "@/components/util";
@@ -31,7 +32,9 @@ interface View {
   deliverability: {
     check: { domain: string; free: boolean; mx: boolean; spf: { ok: boolean; record: string | null }; dkim: { ok: boolean; selector: string | null }; dmarc: { ok: boolean; record: string | null; policy: string | null }; ready: boolean; fixes: string[]; checked_at: string } | null;
     paused: { at: string; reason: string } | null;
-    warmup: { cap: number; day: number };
+    warmup: { cap: number; day: number; spreadMin: number };
+    plan: { queued: number; nextAt: string | null; why: string; sentToday: number };
+    steps: readonly { upToDay: number; perDay: number }[];
     business_hours_now: boolean;
   } | null;
   imports?: {
@@ -292,9 +295,11 @@ export default function SettingsPage() {
                     </>
                   )}
                   <div className="small">
-                    Warm-up day {d.warmup.day}: up to <b>{d.warmup.cap}</b> emails today{d.warmup.cap < v.settings.daily_limit ? ` (rising to your limit of ${v.settings.daily_limit} over two weeks)` : ""}. Emails go
-                    out {v.settings.send_gap_min}–{Math.round(v.settings.send_gap_min * 1.6)} minutes apart at random, plain text with no tracking, each with a one-click unsubscribe. Bounced
-                    addresses are never emailed again, and sending pauses itself if more than 5% bounce.
+                    <b>Warm-up day {d.warmup.day}</b> for this mailbox: up to <b>{d.warmup.cap}</b> emails per day, spread across the US business day — about one every{" "}
+                    <b>{d.warmup.spreadMin} minutes</b> (±25% at random). Schedule:{" "}
+                    {d.steps.map((w, i) => `days ${i ? d.steps[i - 1].upToDay + 1 : 1}–${w.upToDay}: ${Math.min(w.perDay, v.settings.daily_limit)}/day`).join(" · ")} · then your
+                    limit of {v.settings.daily_limit}/day. {d.plan.queued > 0 && <>Queued: <b>{d.plan.queued}</b>, next {whenText(d.plan.nextAt)} — {d.plan.why}.</>} Plain text, no tracking,
+                    one-click unsubscribe; bounced addresses are never emailed again and sending pauses itself if more than 5% bounce.
                   </div>
                   <div className="row" style={{ justifyContent: "space-between", gap: 10 }}>
                     <span className="small">

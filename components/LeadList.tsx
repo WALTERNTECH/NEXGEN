@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { useFeed } from "./feed";
+import { useFeed, whenText } from "./feed";
 import { IMail, IPhone, IWhatsApp, IDetails, ITrash } from "./icons";
 import { api, CAT_COLOR, CAT_LABEL, contactState, daysSince, fmtDate, isNew, prettyPhone, telHref, usd, waNumber, type Lead } from "./util";
 
@@ -95,7 +95,7 @@ function Email({ l }: { l: Lead }) {
 }
 
 export function LeadList({ leads, selectable = true, empty }: { leads: Lead[]; selectable?: boolean; empty?: React.ReactNode }) {
-  const { openLead, fresh, toast, refresh } = useFeed();
+  const { openLead, fresh, toast, refresh, feed } = useFeed();
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [kind, setKind] = useState<"initial" | "followup" | null>(null);
   const [busy, setBusy] = useState(false);
@@ -173,9 +173,19 @@ export function LeadList({ leads, selectable = true, empty }: { leads: Lead[]; s
   };
 
   if (!leads.length) return <div className="empty">{empty ?? <b>No leads here yet</b>}</div>;
+  const plan = feed?.sendPlan;
 
   return (
     <>
+      {plan && plan.queued > 0 && (
+        <div className="notice" style={{ marginBottom: 10 }}>
+          <b>
+            {plan.queued} email{plan.queued === 1 ? "" : "s"} queued
+          </b>{" "}
+          — next one goes out <b>{whenText(plan.nextAt)}</b>. {plan.why}. Warm-up day {plan.day}: {plan.perDay} per day, about one every {plan.spreadMin} minutes
+          ({plan.sentToday} sent in the last 24 h).
+        </div>
+      )}
       <div className="table-wrap">
         <table className="table">
           <thead>

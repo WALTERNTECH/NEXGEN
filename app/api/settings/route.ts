@@ -21,7 +21,7 @@ import {
   type Mailbox,
 } from "@/lib/config";
 import { verifyMailbox } from "@/lib/mailer";
-import { checkDomain, currentCheck, warmupCap, sendPaused, inUsBusinessHours } from "@/lib/deliverability";
+import { checkDomain, currentCheck, warmupCap, sendPaused, inUsBusinessHours, sendPlan, WARMUP } from "@/lib/deliverability";
 import { setSetting } from "@/lib/config";
 import { q } from "@/lib/db";
 import { ping, searchCategory, searchesLeftThisHour, ymd, RateLimited } from "@/lib/courtlistener";
@@ -48,6 +48,8 @@ async function view() {
           check: await currentCheck().catch(() => null),
           paused: await sendPaused(),
           warmup: await warmupCap((await getSettings()).daily_limit),
+          plan: await sendPlan(),
+          steps: WARMUP,
           business_hours_now: inUsBusinessHours(),
         }
       : null,
@@ -230,7 +232,10 @@ export async function PUT(req: Request) {
       } catch (e) {
         return bad(`Couldn't sign in to the mailbox: ${(e as Error).message}`);
       }
+      const prev = await mailbox();
       await saveMailbox(m);
+      // A different mailbox starts its own warm-up from today.
+      if (!prev || prev.email !== m.email) await setSetting("mailbox_since", new Date().toISOString());
       await logRun("system", true, `Mailbox ${email} connected`);
       const d = await checkDomain(m.email, m.smtp_host).catch(() => null);
       if (d && !d.ready) await logRun("send", false, `${d.domain}: sending is held until its records are fixed — ${d.fixes[0] ?? ""}`);

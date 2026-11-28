@@ -99,11 +99,72 @@ export async function currentCheck(): Promise<DomainCheck | null> {
 }
 
 /** New mailboxes ramp up: sending 50 cold emails on day one is the quickest way into spam. */
-export async function warmupCap(dailyLimit: number): Promise<{ cap: number; day: number }> {
-  const r = await one<{ first: string | null }>(`select min(sent_at) as first from email_log where status = 'sent' and kind <> 'reply'`);
-  const day = r?.first ? Math.floor((Date.now() - Date.parse(r.first)) / 86_400_000) + 1 : 1;
-  const ramp = day <= 3 ? 10 : day <= 7 ? 20 : day <= 14 ? 35 : Infinity;
-  return { cap: Math.min(dailyLimit, ramp), day };
+/** Warm-up steps for a new sending domain: emails per day by days since the mailbox was connected. */
+export const WARMUP = [
+  { upToDay: 3, perDay: 5 },
+  { upToDay: 7, perDay: 10 },
+  { upToDay: 14, perDay: 20 },
+  { upToDay: 21, perDay: 35 },
+] as const;
+
+/** The US business-day window emails are spread across (8 am – 5 pm Eastern = 540 minutes). */
+export const WINDOW_MIN = 540;
+
+/**
+ * Today's allowance for the connected mailbox. The count restarts when a new mailbox is connected
+ * (settings "mailbox_since"), because a new domain has no reputation yet.
+ */
+export async function warmupCap(dailyLimit: number): Promise<{ cap: number; day: number; spreadMin: number }> {
+  let since = await getSetting<string>("mailbox_since");
+  if (!since) {
+    const r = await one<{ first: string | null }>(`select min(sent_at) as first from email_log where status = 'sent' and kind <> 'reply'`);
+    since = r?.first ?? new Date().toISOString();
+  }
+  const day = Math.floor((Date.now() - Date.parse(since)) / 86_400_000) + 1;
+  const step = WARMUP.find((w) => day <= w.upToDay);
+  const cap = Math.max(1, Math.min(dailyLimit, step ? step.perDay : dailyLimit));
+  // Spread the day's emails evenly across the business window.
+  return { cap, day, spreadMin: Math.round(WINDOW_MIN / cap) };
+}
+
+/** Emails that count toward today's allowance (tests to your own address don't). */
+export async function sentLast24h(): Promise<{ today: number; last: string | null }> {
+  const r = await one<{ today: number; last: string | null }>(
+    `select count(*) filter (where e.sent_at > now() - interval '24 hours' and coalesce(l.source, '') <> 'test') as today, max(e.sent_at) as last
+     from email_log e left join leads l on l.id = e.lead_id where e.status = 'sent'`,
+  );
+  return { today: Number(r?.today ?? 0), last: r?.last ?? null };
+}
+
+/** The next moment inside the US business window (checked in 5-minute steps, up to 4 days ahead). */
+export function nextWindowStart(from = new Date()): Date {
+  for (let t = from.getTime(), end = t + 4 * 86_400_000; t < end; t += 5 * 60_000) if (inUsBusinessHours(new Date(t))) return new Date(t);
+  return from;
+}
+
+/** What the queue will do next — shown in the app so "queued" always says when. */
+export async function sendPlan(): Promise<{ queued: number; nextAt: string | null; why: string; day: number; perDay: number; spreadMin: number; sentToday: number }> {
+  const s = (await import("./config")).getSettings;
+  const settings = await s();
+  const warm = await warmupCap(settings.daily_limit);
+  const q0 = await one<{ n: number }>(`select count(*) as n from email_log where status = 'queued'`);
+  const queued = Number(q0?.n ?? 0);
+  const st = await sentLast24h();
+  const base = { queued, day: warm.day, perDay: warm.cap, spreadMin: warm.spreadMin, sentToday: st.today };
+  const paused = await sendPaused();
+  if (paused) return { ...base, nextAt: null, why: `Sending paused: ${paused.reason}` };
+  if (!(await mailbox())) return { ...base, nextAt: null, why: "No mailbox connected" };
+  const dom = await getSetting<DomainCheck>("deliverability");
+  if (dom && !dom.ready) return { ...base, nextAt: null, why: `Held until ${dom.domain}'s mail records are fixed` };
+  const now = new Date();
+  if (settings.us_business_hours && !inUsBusinessHours(now)) return { ...base, nextAt: nextWindowStart(now).toISOString(), why: "Waiting for US business hours (weekdays 8 am – 5 pm Eastern)" };
+  if (st.today >= warm.cap) {
+    const after = new Date(Date.parse(st.last ?? now.toISOString()) + 86_400_000);
+    return { ...base, nextAt: (settings.us_business_hours ? nextWindowStart(after) : after).toISOString(), why: `Today's warm-up allowance (${warm.cap}) is used` };
+  }
+  const at = await getSetting<string>("next_send_at");
+  if (at && Date.parse(at) > now.getTime()) return { ...base, nextAt: at, why: `Spacing emails about ${warm.spreadMin} minutes apart` };
+  return { ...base, nextAt: now.toISOString(), why: "Sending within the next minute" };
 }
 
 /** US weekdays, 8 am – 5 pm Eastern (5 am – 2 pm Pacific): when owners read email and the send looks like a person's. */
@@ -120,7 +181,8 @@ export async function nextSendAllowed(): Promise<boolean> {
   return !at || Date.parse(at) <= Date.now();
 }
 export async function scheduleNextSend(gapMin: number) {
-  const ms = Math.max(1, gapMin) * 60_000 * (1 + Math.random() * 0.6);
+  // ±25% so the sends don't arrive on a fixed beat.
+  const ms = Math.max(1, gapMin) * 60_000 * (0.75 + Math.random() * 0.5);
   await setSetting("next_send_at", new Date(Date.now() + ms).toISOString());
 }
 
