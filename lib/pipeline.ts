@@ -1058,16 +1058,21 @@ export async function tick(opts: { forceIngest?: boolean } = {}) {
   await step("enrich", () => enrichPending());
   await step("poll", () => pollEnrichment());
   await step("backfill", () => processBackfill(Math.max(3_000, 40_000 - (Date.now() - t0))));
+  await step("autoQueue", () => autoQueue());
+  await step("send", () => processQueue());
+  // Replies last, with a hard limit: a slow or unresponsive mail server must never hold up sending.
   await step("inbox", async () => {
     if (!(await lease("inbox", 50))) return "busy";
     try {
-      const r = await checkInbox();
+      const r = await Promise.race([
+        checkInbox(),
+        new Promise<"timeout">((res) => setTimeout(() => res("timeout"), 25_000)),
+      ]);
+      if (r === "timeout") return "mail server slow — will retry next minute";
       return r ? `${r.matched} replies` : "no mailbox";
     } finally {
       await release("inbox");
     }
   });
-  await step("autoQueue", () => autoQueue());
-  await step("send", () => processQueue());
   return out;
 }

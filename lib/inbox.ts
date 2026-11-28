@@ -30,8 +30,11 @@ export async function checkInbox(): Promise<{ checked: number; matched: number }
     secure: true,
     auth: { user: m.email, pass: m.password },
     logger: false,
-    socketTimeout: 30_000,
+    socketTimeout: 20_000,
+    connectionTimeout: 15_000,
+    greetingTimeout: 15_000,
   });
+  c.on("error", () => {});
   await c.connect();
   let checked = 0;
   let matched = 0;

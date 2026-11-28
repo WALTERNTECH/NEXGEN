@@ -90,7 +90,10 @@ export async function sendMail(opts: {
       headers,
     });
     // Keep a copy in the mailbox's Sent folder so the conversation lives in one place.
-    await saveToSent(m, opts.to, opts.subject, text, html, messageId, headers, s.sender_name).catch(() => {});
+    await Promise.race([
+      saveToSent(m, opts.to, opts.subject, text, html, messageId, headers, s.sender_name).catch(() => {}),
+      new Promise((res) => setTimeout(res, 15_000)),
+    ]);
     return { messageId, via: "smtp" };
   }
 
@@ -139,7 +142,17 @@ async function saveToSent(
     .compile()
     .build();
   const { ImapFlow } = await import("imapflow");
-  const c = new ImapFlow({ host: m.imap_host, port: m.imap_port, secure: true, auth: { user: m.email, pass: m.password }, logger: false });
+  const c = new ImapFlow({
+    host: m.imap_host,
+    port: m.imap_port,
+    secure: true,
+    auth: { user: m.email, pass: m.password },
+    logger: false,
+    socketTimeout: 20_000,
+    connectionTimeout: 15_000,
+    greetingTimeout: 15_000,
+  });
+  c.on("error", () => {}); // a mail-server hiccup must never crash the run
   await c.connect();
   try {
     const boxes = await c.list();
@@ -160,7 +173,17 @@ export async function verifyMailbox(m: NonNullable<Awaited<ReturnType<typeof mai
   });
   await t.verify();
   const { ImapFlow } = await import("imapflow");
-  const c = new ImapFlow({ host: m.imap_host, port: m.imap_port, secure: true, auth: { user: m.email, pass: m.password }, logger: false });
+  const c = new ImapFlow({
+    host: m.imap_host,
+    port: m.imap_port,
+    secure: true,
+    auth: { user: m.email, pass: m.password },
+    logger: false,
+    socketTimeout: 20_000,
+    connectionTimeout: 15_000,
+    greetingTimeout: 15_000,
+  });
+  c.on("error", () => {}); // a mail-server hiccup must never crash the run
   await c.connect();
   await c.logout().catch(() => {});
 }
